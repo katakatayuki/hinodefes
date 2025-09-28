@@ -15,8 +15,9 @@ app.use(cors({
 // ミドルウェアの設定
 app.use(express.json());
 
-// 環境変数の設定（この部分はRender用でOK）
+// 環境変数の設定（Render用）
 // このコードはRenderの環境変数から認証情報を取得する
+// 🚨 ここで環境変数がないとクラッシュするため、設定を再確認してください。
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
@@ -27,11 +28,12 @@ const MAX_PER_PERSON_DOC = 'settings/system';
 
 // サーバー起動とルーティングを非同期関数でラップ
 async function startServer() {
-    // 🚨 修正箇所: fetchのインポートをawaitで待つ
+    // fetchのインポートをawaitで待つ
     const nodeFetch = await import('node-fetch');
     const fetch = nodeFetch.default;
 
-    // util: send LINE push
+    // util: send LINE push (🚨 この関数は、使用しないためコメントアウトしても機能します)
+    /*
     async function sendLinePush(toUserId, messageText) {
       const res = await fetch('https://api.line.me/v2/bot/message/push', {
         method: 'POST',
@@ -48,6 +50,7 @@ async function startServer() {
         console.error('LINE push failed', await res.text());
       }
     }
+    */
 
     // POST /api/compute-call
     // body: { availableCount: number, apiSecret: string }
@@ -93,13 +96,15 @@ async function startServer() {
 
       await batch.commit();
 
-      // LINE notify for those who want it (fire-and-forget)
+      // 🚨 修正箇所: LINE通知を一時的に無効化
+      /*
       selected.forEach(item => {
         if (item.data.wantsLine && item.data.lineUserId) {
           const text = `ご準備ができました。番号 ${item.data.number} さん、受付へお戻りください。`;
           sendLinePush(item.data.lineUserId, text).catch(e => console.error(e));
         }
       });
+      */
 
       // log
       await db.collection('logs').add({
@@ -117,12 +122,12 @@ async function startServer() {
       res.json(doc.exists ? doc.data() : { currentCalled: [], updatedAt: null });
     });
 
-    // 🚨 修正箇所: fetchのインポート後にlistenを開始
+    // fetchのインポート後にlistenを開始
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, ()=> console.log('Server on', PORT));
 }
 
-// 🚨 修正箇所: サーバー起動関数を実行し、エラーをキャッチ
+// サーバー起動関数を実行し、エラーをキャッチ
 startServer().catch(e => {
     console.error("FATAL SERVER CRASH:", e);
     // Renderのログに残すために、ここでアプリを終了させる
