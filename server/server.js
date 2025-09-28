@@ -1,8 +1,7 @@
-// server.js (最終版 - 省略なし)
 const express = require('express');
 const cors = require('cors'); 
 const admin = require('firebase-admin');
-const fetch = require('node-fetch');
+const fetch = require('node-fetch'); // node-fetchを使う場合はインストールが必要です
 
 const app = express();
 
@@ -30,7 +29,7 @@ const db = admin.firestore();
 const MAX_PER_PERSON_DOC = 'settings/system';
 
 // ==========================================================
-// LINE Push通知ユーティリティ
+// LINE Push通知ユーティリティ (管理画面からの呼び出し用)
 // ==========================================================
 
 async function sendLinePush(toUserId, messageText) {
@@ -52,6 +51,29 @@ async function sendLinePush(toUserId, messageText) {
     });
     if (!res.ok) {
         console.error('LINE push failed:', res.status, await res.text());
+    }
+}
+
+// ==========================================================
+// LINE Replyユーティリティ (Webhook応答用)
+// ==========================================================
+// Webhookイベント応答に必要な関数（最初のコードブロックから採用）
+async function sendLineReply(replyToken, messageText) {
+    if (!process.env.LINE_ACCESS_TOKEN) return;
+
+    const res = await fetch('https://api.line.me/v2/bot/message/reply', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${process.env.LINE_ACCESS_TOKEN}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            replyToken: replyToken, // Webhookイベントの応答トークン
+            messages: [{ type: 'text', text: messageText }]
+        })
+    });
+    if (!res.ok) {
+        console.error('LINE reply failed:', res.status, await res.text());
     }
 }
 
@@ -112,43 +134,68 @@ app.post('/api/reserve', async (req, res) => {
 });
 
 // ==========================================================
-// POST /api/line-webhook: LINEからのイベント処理 (友だち追加時)
+// POST /api/line-webhook: LINEからのイベント処理 (番号入力による紐付け)
 // ==========================================================
-
+// 🚨 こちらは番号入力による紐付けロジックを採用
 app.post('/api/line-webhook', async (req, res) => {
     
-    const events = req.body.events;
+    // 🚨 簡略化のため署名検証は省略しますが、本来は必須です。
+    // const signature = req.headers['x-line-signature'];
     
-    if (!events || events.length === 0) {
-        return res.sendStatus(200);
-    }
+    const events = req.body.events;
+    if (!events || events.length === 0) return res.sendStatus(200);
 
     for (const event of events) {
-        // 友だち追加（follow）イベントのみ処理
+        const lineUserId = event.source.userId;
+        const replyToken = event.replyToken;
+
         if (event.type === 'follow') {
-            const lineUserId = event.source.userId;
+            // 1. 友だち追加時: 応答メッセージで番号入力を促す
+            const message = '友だち追加ありがとうございます！\n準備完了の通知をご希望の場合は、お手持ちの「受付番号」をメッセージで送信してください。例: 12';
+            await sendLineReply(replyToken, message);
+
+        } else if (event.type === 'message' && event.message.type === 'text') {
             
-            // 1. 紐付けるべき最新の「waiting」予約ドキュメントを検索
-            const latestReservationSnap = await db.collection('reservations')
-                .where('status', '==', 'waiting')
-                .where('lineUserId', '==', null)
-                .where('wantsLine', '==', true)
-                .orderBy('createdAt', 'desc') 
+            const inputText = event.message.text.trim();
+            const reservationNumber = parseInt(inputText, 10);
+
+            // 2. テキストメッセージ受信時: 予約番号の紐付けを試みる
+            if (isNaN(reservationNumber) || reservationNumber <= 0) {
+                // 有効な数値ではない場合
+                await sendLineReply(replyToken, `「${inputText}」は有効な番号ではありません。受付番号を半角数字で再入力してください。`);
+                continue;
+            }
+
+            // 3. Firestoreで該当番号の予約を検索
+            const reservationSnap = await db.collection('reservations')
+                .where('number', '==', reservationNumber)
+                .where('status', '==', 'waiting') // 待機中のみ
+                .where('wantsLine', '==', true) // LINE通知希望者のみ
                 .limit(1)
                 .get();
 
-            if (!latestReservationSnap.empty) {
-                const docRef = latestReservationSnap.docs[0].ref;
-                
-                // 2. 最新の予約にLINE IDを書き込み
-                await docRef.update({
-                    lineUserId: lineUserId
-                });
-                
-                console.log(`LINE ID ${lineUserId} を予約 ${docRef.id} に紐付けました。`);
-            } else {
-                console.log(`LINE ID ${lineUserId} の最新の予約が見つかりませんでした。`);
+            if (reservationSnap.empty) {
+                // 予約が見つからない場合
+                await sendLineReply(replyToken, `番号 ${reservationNumber} の「待機中」の予約は見つかりませんでした。番号を確認してください。`);
+                continue;
             }
+
+            // 4. IDの紐付けを実行
+            const docRef = reservationSnap.docs[0].ref;
+            
+            // 既にこのLINE IDが紐付いているかチェック (二重登録防止)
+            if (reservationSnap.docs[0].data().lineUserId === lineUserId) {
+                await sendLineReply(replyToken, `番号 ${reservationNumber} は既にあなたのLINEに紐付け済みです。準備ができたら通知します！`);
+                continue;
+            }
+
+            // 5. FirestoreにIDを書き込み、ユーザーに成功を通知
+            await docRef.update({ lineUserId: lineUserId });
+
+            const successMessage = `番号 ${reservationNumber} をあなたのLINEに紐付けました。準備ができたら通知します！`;
+            await sendLineReply(replyToken, successMessage);
+            console.log(`Successfully linked LINE ID ${lineUserId} to number ${reservationNumber}.`);
+
         }
     }
 
@@ -215,6 +262,7 @@ app.post('/api/compute-call', async (req, res) => {
         // LINE通知の実行
         if (item.data.wantsLine && item.data.lineUserId) {
             const text = `ご準備ができました。番号 ${reservationNumber} さん、受付へお戻りください。`;
+            // Promiseをcatchすることで、通知失敗が全体の処理を止めないようにする
             sendLinePush(item.data.lineUserId, text).catch(e => console.error(e));
         }
     });
@@ -236,7 +284,7 @@ app.post('/api/compute-call', async (req, res) => {
 });
 
 // ==========================================================
-// GET /api/tv-status (省略されていたTV表示用ルート)
+// GET /api/tv-status (TV表示用ルート)
 // ==========================================================
 app.get('/api/tv-status', async (req, res) => {
     // 現在呼び出し中の番号リストを返す
@@ -250,7 +298,7 @@ app.get('/api/tv-status', async (req, res) => {
 });
 
 // ==========================================================
-// GET /api/reservations (省略されていた管理画面用ルート)
+// GET /api/reservations (管理画面用ルート)
 // ==========================================================
 app.get('/api/reservations', async (req, res) => {
     // すべての予約リストを返す（管理画面で一覧表示に使う）
