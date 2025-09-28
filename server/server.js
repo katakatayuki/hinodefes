@@ -261,7 +261,7 @@ app.post('/api/line-webhook', async (req, res) => {
 
 
 // ==========================================================
-// POST /api/compute-call (管理画面からの呼び出し実行 - 人数ベースに修正)
+// POST /api/compute-call (管理画面からの呼び出し実行 - 団体別・人数ベース) 🚨 修正箇所
 // ==========================================================
 
 app.post('/api/compute-call', async (req, res) => {
@@ -269,17 +269,27 @@ app.post('/api/compute-call', async (req, res) => {
     if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden');
     
     // availableCountをavailablePeopleに読み替え
-    const availablePeople = parseInt(req.body.availableCount, 10); // フロントエンドはavailableCountというキーで人数を送ってくる前提
+    const availablePeople = parseInt(req.body.availableCount, 10); // 空き人数
+    const callGroup = req.body.callGroup; // 🚨 管理画面から送られてきた団体名を取得
     
     // availablePeopleでチェック
     if (isNaN(availablePeople) || availablePeople <= 0) { 
         return res.status(400).send('bad available (must be a valid positive number)');
     }
 
-    const waitingSnap = await db.collection('reservations')
+    // 団体のバリデーション (必須)
+    if (!callGroup || (callGroup !== '5-5' && callGroup !== '5-2')) {
+        return res.status(400).send('bad callGroup (must be 5-5 or 5-2)');
+    }
+
+
+    // 🚨 修正: 選択された団体のみを絞り込む
+    let waitingQuery = db.collection('reservations')
       .where('status', '==', 'waiting')
-      .orderBy('createdAt', 'asc') // FIFO
-      .get();
+      .where('group', '==', callGroup) // 🚨 追加: 選択された団体のみを絞り込む
+      .orderBy('createdAt', 'asc');
+      
+    const waitingSnap = await waitingQuery.get();
 
     let totalNeeded = 0;
     const selected = [];
@@ -337,6 +347,7 @@ app.post('/api/compute-call', async (req, res) => {
         type: 'call',
         reservationIds: selected.map(s=>s.id),
         available: availablePeople, // ログに残す値
+        callGroup: callGroup, // 🚨 追加: 呼び出した団体名もログに残す
         createdAt: now
     });
 
@@ -344,7 +355,7 @@ app.post('/api/compute-call', async (req, res) => {
 });
 
 // ==========================================================
-// GET /api/waiting-summary: 団体別の待ち状況サマリー 🚨 追加されたエンドポイント
+// GET /api/waiting-summary: 団体別の待ち状況サマリー
 // ==========================================================
 app.get('/api/waiting-summary', async (req, res) => {
     try {
