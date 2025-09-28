@@ -1,0 +1,5 @@
+# サーバーの秘密鍵ファイルはGitHubから除外する
+server/paspas.json
+
+# 環境変数を格納するファイルも除外
+frontend/.env
