@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node server/server.js",
+    "dev": "nodemon server/server.js"
   },
   "keywords": [],
   "author": "",
@@ -14,7 +14,7 @@
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "firebase-admin": "^13.5.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^2.6.7" // 🚨 v2.xにダウングレードし、require()構文に対応
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
