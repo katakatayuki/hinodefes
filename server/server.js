@@ -17,21 +17,21 @@ app.use(cors({
 app.use(express.json());
 
 // 環境変数の設定（Render用）
-// このコードはRenderの環境変数から認証情報を取得する
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 const db = admin.firestore();
 
+// Firestoreのシステム設定ドキュメントを定義
 const MAX_PER_PERSON_DOC = 'settings/system';
 
 // サーバー起動とルーティングを非同期関数でラップ
 async function startServer() {
     
-    // util: send LINE push (🚨 サーバークラッシュ防止のため、一時的に無効化)
-    /*
-    async function sendLinePush(toUserId, messageText) {
+    // util: send LINE push (🚨 サーバークラッシュ防止のため、一時的に無効化)
+    /*
+    async function sendLinePush(toUserId, messageText) {
       const res = await fetch('https://api.line.me/v2/bot/message/push', {
         method: 'POST',
         headers: {
@@ -46,12 +46,82 @@ async function startServer() {
       if (!res.ok) {
         console.error('LINE push failed', await res.text());
       }
-    }
-    */
+    }
+    */
 
-    // POST /api/compute-call
-    // body: { availableCount: number, apiSecret: string }
-    app.post('/api/compute-call', async (req, res) => {
+
+    // ==========================================================
+    // 🚨 新規追加: ユーザーからの予約を受け付け、番号を付与するルート
+    // ==========================================================
+    // POST /api/reserve
+    app.post('/api/reserve', async (req, res) => {
+        
+        // ユーザーから送信された予約データ
+        const userData = req.body;
+        
+        // 必須フィールドの検証
+        if (!userData.name || !userData.people || userData.people <= 0) {
+            return res.status(400).send('Invalid reservation data (name or people missing).');
+        }
+        
+        // トランザクションを開始し、連番処理を安全に行う
+        try {
+            const result = await db.runTransaction(async (t) => {
+                
+                // 1. カウンターを取得 (settings/system/currentReservationNumber)
+                const counterRef = db.doc(MAX_PER_PERSON_DOC);
+                const counterSnap = await t.get(counterRef);
+                
+                let nextNumber = 1;
+                // カウンターが存在し、値があればインクリメント
+                if (counterSnap.exists && counterSnap.data().currentReservationNumber) {
+                    nextNumber = counterSnap.data().currentReservationNumber + 1;
+                }
+                
+                // 2. カウンターを更新 (次の番号を保存)
+                t.set(counterRef, { currentReservationNumber: nextNumber }, { merge: true });
+
+                // 3. 予約ドキュメントを作成
+                const newReservationRef = db.collection('reservations').doc();
+                
+                const reservationData = {
+                    name: userData.name, 
+                    people: parseInt(userData.people, 10), // 数値に変換
+                    wantsLine: !!userData.wantsLine,
+                    lineUserId: userData.lineUserId || null,
+                    
+                    // 予約番号を付与！
+                    number: nextNumber, 
+                    
+                    status: 'waiting',
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    calledAt: null,
+                    seatEnterAt: null,
+                    notes: userData.notes || ""
+                };
+                
+                t.set(newReservationRef, reservationData);
+
+                return { success: true, number: nextNumber };
+            });
+
+            res.json(result);
+
+        } catch (e) {
+            console.error("Reservation registration failed:", e);
+            res.status(500).send("Registration failed due to server error.");
+        }
+    });
+    
+    // ==========================================================
+    // 既存のルート
+    // ==========================================================
+
+
+    // POST /api/compute-call (管理画面からの呼び出し実行)
+    // body: { availableCount: number, apiSecret: string }
+    app.post('/api/compute-call', async (req, res) => {
+        
         // シークレットキーの確認 (403)
         if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden');
         
@@ -86,7 +156,7 @@ async function startServer() {
         const now = admin.firestore.FieldValue.serverTimestamp();
         const calledNumbers = [];
         
-        // 🚨 修正: numberフィールドが存在しない予約をスキップし、undefinedエラーを防ぐ
+        // 🚨 最終修正: numberフィールドが存在しない予約をスキップし、undefinedエラーを防ぐ
         selected.forEach(item => {
           if (item.data.number === undefined) {
               console.error(`Reservation ID ${item.id} is missing 'number' field and was skipped.`);
@@ -112,7 +182,7 @@ async function startServer() {
             sendLinePush(item.data.lineUserId, text).catch(e => console.error(e));
           }
         });
-        */
+        */
 
         // log
         await db.collection('logs').add({
@@ -123,22 +193,22 @@ async function startServer() {
         });
 
         res.json({ success: true, called: calledNumbers, totalNeeded });
-    });
+    });
 
-    // GET /api/tv-status
-    app.get('/api/tv-status', async (req, res) => {
+    // GET /api/tv-status
+    app.get('/api/tv-status', async (req, res) => {
         const doc = await db.doc('tv/state').get();
         res.json(doc.exists ? doc.data() : { currentCalled: [], updatedAt: null });
-    });
+    });
 
-    // サーバーの待ち受け開始
-    const PORT = process.env.PORT || 3000;
-    app.listen(PORT, ()=> console.log('Server on', PORT));
+    // サーバーの待ち受け開始
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, ()=> console.log('Server on', PORT));
 }
 
 // サーバー起動関数を実行し、エラーをキャッチ
 startServer().catch(e => {
-    console.error("FATAL SERVER CRASH:", e);
-    // Renderのログに残すために、ここでアプリを終了させる
-    process.exit(1); 
+    console.error("FATAL SERVER CRASH:", e);
+    // Renderのログに残すために、ここでアプリを終了させる
+    process.exit(1); 
 });
