@@ -1,35 +1,40 @@
 // 必要なライブラリをインポート
 const express = require('express');
-const cors = require('cors'); // 必須
+const cors = require('cors'); 
 const admin = require('firebase-admin');
-const fetch = require('node-fetch'); // 🚨 修正: await import ではなく require を使用
+const fetch = require('node-fetch'); // 🚨 修正: CommonJSの require を使用し、デプロイエラーを回避
 
 // サーバーを初期化
 const app = express();
 
 // CORSを詳細に設定
 app.use(cors({
-    origin: '*',  // ← すべてのドメインからのアクセスを許可
-    methods: ['GET', 'POST'] // ← GETとPOSTを許可
+    origin: '*',  // すべてのドメインからのアクセスを許可
+    methods: ['GET', 'POST'] // GETとPOSTを許可
 }));
 
 // ミドルウェアの設定
 app.use(express.json());
 
 // 環境変数の設定（Render用）
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+try {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+    });
+} catch (e) {
+    console.error("Firebase initialization failed. Check FIREBASE_SERVICE_ACCOUNT variable.");
+    process.exit(1);
+}
+
 const db = admin.firestore();
 
 // Firestoreのシステム設定ドキュメントを定義
 const MAX_PER_PERSON_DOC = 'settings/system';
 
-// サーバー起動とルーティングを非同期関数でラップ (fetchのawait import回避のため、async関数は不要)
 function startServer() {
     
-    // util: send LINE push (🚨 エラー切り分けのため無効化)
+    // util: send LINE push (🚨 エラー切り分けのため引き続き無効化)
     /*
     async function sendLinePush(toUserId, messageText) {
       const res = await fetch('https://api.line.me/v2/bot/message/push', {
@@ -51,9 +56,8 @@ function startServer() {
 
 
     // ==========================================================
-    // 🚨 必須: ユーザーからの予約を受け付け、番号を付与するルート
+    // POST /api/reserve: ユーザーからの予約を受け付け、番号を付与
     // ==========================================================
-    // POST /api/reserve
     app.post('/api/reserve', async (req, res) => {
         
         const userData = req.body;
@@ -72,6 +76,7 @@ function startServer() {
                 
                 let nextNumber = 1;
                 if (counterSnap.exists && counterSnap.data().currentReservationNumber) {
+                    // 🚨 採番ロジック: 現在の番号に+1
                     nextNumber = counterSnap.data().currentReservationNumber + 1;
                 }
                 
@@ -86,7 +91,7 @@ function startServer() {
                     people: parseInt(userData.people, 10), 
                     wantsLine: !!userData.wantsLine,
                     lineUserId: userData.lineUserId || null,
-                    number: nextNumber, // 🚨 これが重要
+                    number: nextNumber, // 🚨 トランザクションで採番された番号
                     status: 'waiting',
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                     calledAt: null,
@@ -116,12 +121,17 @@ function startServer() {
         // シークレットキーの確認 (403)
         if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden');
         
-        // 利用可能な席数の確認 (400)
+        // 利用可能な席数（完成個数）の確認 (400)
         const available = parseInt(req.body.availableCount, 10);
-        if (isNaN(available) || available <= 0) return res.status(400).send('bad available');
+        // 🚨 修正: 巨大な数字や空欄でNaNになる場合に400を返す
+        if (isNaN(available) || available <= 0) {
+            console.error(`Invalid availableCount received: ${req.body.availableCount}`);
+            return res.status(400).send('bad available (must be a valid positive number)');
+        }
 
         // maxPerPersonを取得
         const sdoc = await db.doc(MAX_PER_PERSON_DOC).get();
+        // 🚨 修正: maxPerPersonがない場合は安全に1をデフォルトにする
         const M = (sdoc.exists && sdoc.data().maxPerPerson) ? sdoc.data().maxPerPerson : 1;
 
         // 待機中の予約を取得
@@ -133,30 +143,41 @@ function startServer() {
         let totalNeeded = 0;
         const selected = [];
         waitingSnap.forEach(doc => {
-          if (totalNeeded >= available) return;
+          if (totalNeeded >= available) return; // 席数が不足したらストップ
           const d = doc.data();
-          const need = (d.people || 1) * M;
+          const need = (d.people || 1) * M; // 必要な席数を計算
           if (totalNeeded + need <= available) {
             totalNeeded += need;
             selected.push({ id: doc.id, data: d });
           }
         });
+        
+        // 選択されたグループがない場合は、空の配列を返す
+        if (selected.length === 0) {
+            return res.json({ success: true, called: [], totalNeeded: 0 });
+        }
+
 
         // update selected reservations to "called"
         const batch = db.batch();
         const now = admin.firestore.FieldValue.serverTimestamp();
         const calledNumbers = [];
         
-        // 🚨 修正: numberフィールドが存在しない予約をスキップし、undefinedエラーを防ぐ
+        // 🚨 最終修正: numberフィールドが存在しない予約をスキップせず、9999を付与して呼び出しクラッシュを防ぐ
         selected.forEach(item => {
-          if (item.data.number === undefined) {
-              console.error(`Reservation ID ${item.id} is missing 'number' field and was skipped. Call failed.`);
-              return; // numberがない予約は処理をスキップ
-          }
+            // numberがない場合は、古い予約だとみなし、仮の大きな番号を付与
+            const reservationNumber = item.data.number !== undefined ? item.data.number : 9999;
           
-          const rRef = db.collection('reservations').doc(item.id);
-          batch.update(rRef, { status: 'called', calledAt: now });
-          calledNumbers.push(item.data.number);
+            const rRef = db.collection('reservations').doc(item.id);
+            
+            // ドキュメントにも number フィールドを追加/更新する
+            batch.update(rRef, { 
+                status: 'called', 
+                calledAt: now,
+                number: reservationNumber // 呼び出し時にnumberを強制的に付与/更新
+            });
+          
+            calledNumbers.push(reservationNumber);
         });
 
         // update /tv/state
@@ -197,5 +218,5 @@ function startServer() {
     app.listen(PORT, ()=> console.log('Server on', PORT));
 }
 
-// サーバー起動関数を実行し、エラーをキャッチ
-startServer(); // async関数ではないため、catchは不要
+// サーバー起動関数を実行
+startServer();
