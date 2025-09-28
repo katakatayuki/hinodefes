@@ -1,10 +1,10 @@
 {
   "name": "server",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server.js", // 🚨 修正: サーバーのエントリーファイルを指す
   "scripts": {
-    "start": "node server/server.js",
-    "dev": "nodemon server/server.js"
+    "start": "node server.js", // 🚨 修正: `server`ディレクトリ内で実行されるのでこれでOK
+    "dev": "nodemon server.js"
   },
   "keywords": [],
   "author": "",
