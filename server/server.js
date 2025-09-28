@@ -26,7 +26,8 @@ try {
 }
 
 const db = admin.firestore();
-const MAX_PER_PERSON_DOC = 'settings/system';
+// const MAX_PER_PERSON_DOC = 'settings/system'; // 🚨 削除 (団体別採番と人数ベース呼び出しのため不要に)
+const COUNTER_DOC = 'settings/counters'; // 🚨 追加: カウンターを管理する新しい場所
 
 // ==========================================================
 // LINE Push通知ユーティリティ
@@ -56,7 +57,7 @@ async function sendLinePush(toUserId, messageText) {
 
 
 // ==========================================================
-// LINE Replyユーティリティ (Webhookイベントの応答用)  <-- A: 追加
+// LINE Replyユーティリティ (Webhookイベントの応答用) 
 // ==========================================================
 
 async function sendLineReply(replyToken, messageText) {
@@ -80,40 +81,51 @@ async function sendLineReply(replyToken, messageText) {
 
 
 // ==========================================================
-// POST /api/reserve: 予約登録と連番採番 (フロントエンドから叩く)
+// POST /api/reserve: 予約登録と団体別連番採番 (フロントエンドから叩く)
 // ==========================================================
 app.post('/api/reserve', async (req, res) => {
     
     const userData = req.body;
     
-    if (!userData.name || !userData.people || userData.people <= 0) {
-        return res.status(400).send('Invalid reservation data (name or people missing).');
+    // 🚨 修正: 必須チェックにgroupを追加
+    if (!userData.name || !userData.people || userData.people <= 0 || !userData.group) { 
+        return res.status(400).send('Invalid reservation data (name, people, or group missing).');
     }
     
+    // 🚨 修正: 団体名からプレフィックスを取得 (例: '5-5' -> 55, '5-2' -> 52)
+    const groupPrefix = userData.group.replace('-', '');
+    const groupCounterKey = `counter_${groupPrefix}`; // 例: counter_55
+
     try {
         const result = await db.runTransaction(async (t) => {
             
-            // 1. カウンターを取得し、連番を採番
-            const counterRef = db.doc(MAX_PER_PERSON_DOC);
+            // 1. 団体別カウンターを取得し、連番を採番
+            const counterRef = db.doc(COUNTER_DOC); // 🚨 修正
             const counterSnap = await t.get(counterRef);
             
             let nextNumber = 1;
-            if (counterSnap.exists && counterSnap.data().currentReservationNumber) {
-                nextNumber = counterSnap.data().currentReservationNumber + 1;
+            if (counterSnap.exists && counterSnap.data()[groupCounterKey]) {
+                nextNumber = counterSnap.data()[groupCounterKey] + 1;
             }
             
             // 2. カウンターを更新
-            t.set(counterRef, { currentReservationNumber: nextNumber }, { merge: true });
+            const updateData = {};
+            updateData[groupCounterKey] = nextNumber;
+            t.set(counterRef, updateData, { merge: true }); // 🚨 修正
 
-            // 3. 予約ドキュメントを作成 (numberを付与)
+            // 3. 予約ドキュメントを作成 (numberとgroupを付与)
             const newReservationRef = db.collection('reservations').doc();
+            
+            // 🚨 予約番号の最終形式は文字列 (例: "55-1", "52-3")
+            const fullReservationNumber = `${groupPrefix}-${nextNumber}`; 
             
             const reservationData = {
                 name: userData.name, 
                 people: parseInt(userData.people, 10), 
                 wantsLine: !!userData.wantsLine,
                 lineUserId: userData.lineUserId || null,
-                number: nextNumber, // トランザクションで採番された番号
+                group: userData.group, // 🚨 追加: 団体名も保存
+                number: fullReservationNumber, // 🚨 複合番号を保存
                 status: 'waiting',
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 calledAt: null,
@@ -123,7 +135,8 @@ app.post('/api/reserve', async (req, res) => {
             
             t.set(newReservationRef, reservationData);
 
-            return { success: true, number: nextNumber, id: newReservationRef.id };
+            // 🚨 戻り値も修正
+            return { success: true, number: fullReservationNumber, id: newReservationRef.id }; 
         });
 
         res.json(result);
@@ -135,7 +148,7 @@ app.post('/api/reserve', async (req, res) => {
 });
 
 // ==========================================================
-// POST /api/line-webhook: LINEからのイベント処理 (番号入力による紐付け) <-- B: 完全に置き換え
+// POST /api/line-webhook: LINEからのイベント処理 (番号入力による紐付け)
 // ==========================================================
 app.post('/api/line-webhook', async (req, res) => {
 
@@ -152,7 +165,7 @@ app.post('/api/line-webhook', async (req, res) => {
         // 1. 友だち追加時 (follow)
         // -----------------------------------------------------
         if (event.type === 'follow') {
-            const message = '友だち追加ありがとうございます！\n準備完了の通知をご希望の場合は、お手持ちの「受付番号」をメッセージで送信してください。例: 12';
+            const message = '友だち追加ありがとうございます！\n準備完了の通知をご希望の場合は、お手持ちの「受付番号」をメッセージで送信してください。例: 55-1';
             await sendLineReply(replyToken, message);
         }
 
@@ -190,11 +203,11 @@ app.post('/api/line-webhook', async (req, res) => {
         // -----------------------------------------------------
         else if (event.type === 'message' && event.message.type === 'text') {
 
-            const reservationNumber = parseInt(inputText, 10);
+            const reservationNumber = inputText; // 🚨 修正: 複合番号は文字列のまま
 
-            // A. 有効な数値ではない場合（文字などが送られてきた場合）
-            if (isNaN(reservationNumber) || reservationNumber <= 0) {
-                const message = '申し訳ありません、通知設定には「受付番号」の**半角数字**が必要です。番号を再入力してください。';
+            // A. 入力が空ではないことを確認（半角数字-半角数字のパターンチェックは省略し、Firestore検索に任せる）
+            if (!reservationNumber) {
+                const message = '申し訳ありません、通知設定には「受付番号」が必要です。番号を再入力してください。例: 55-1';
                 await sendLineReply(replyToken, message);
                 continue;
             }
@@ -249,20 +262,22 @@ app.post('/api/line-webhook', async (req, res) => {
 
 
 // ==========================================================
-// POST /api/compute-call (管理画面からの呼び出し実行)
+// POST /api/compute-call (管理画面からの呼び出し実行 - 人数ベースに修正)
 // ==========================================================
 
 app.post('/api/compute-call', async (req, res) => {
     
     if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden');
     
-    const available = parseInt(req.body.availableCount, 10);
-    if (isNaN(available) || available <= 0) {
+    // 🚨 修正: availableCountをavailablePeopleに読み替え
+    const availablePeople = parseInt(req.body.availableCount, 10); // フロントエンドはavailableCountというキーで人数を送ってくる前提
+    
+    // 🚨 修正: availablePeopleでチェック
+    if (isNaN(availablePeople) || availablePeople <= 0) { 
         return res.status(400).send('bad available (must be a valid positive number)');
     }
 
-    const sdoc = await db.doc(MAX_PER_PERSON_DOC).get();
-    const M = (sdoc.exists && sdoc.data().maxPerPerson) ? sdoc.data().maxPerPerson : 1;
+    // 🚨 削除: MAX_PER_PERSON_DOC（M）の取得と計算は不要
 
     const waitingSnap = await db.collection('reservations')
       .where('status', '==', 'waiting')
@@ -272,11 +287,15 @@ app.post('/api/compute-call', async (req, res) => {
     let totalNeeded = 0;
     const selected = [];
     waitingSnap.forEach(doc => {
-      if (totalNeeded >= available) return; 
+      // 🚨 修正: totalNeededがavailablePeopleを超えたら終了
+      if (totalNeeded >= availablePeople) return; 
+      
       const d = doc.data();
-      const need = (d.people || 1) * M; 
-      if (totalNeeded + need <= available) {
-        totalNeeded += need;
+      const need = d.people || 1; // 必要なのはその予約の人数そのまま
+      
+      // 🚨 修正: 合計人数が空き人数を超えないなら採用
+      if (totalNeeded + need <= availablePeople) {
+        totalNeeded += need; 
         selected.push({ id: doc.id, data: d });
       }
     });
@@ -291,15 +310,15 @@ app.post('/api/compute-call', async (req, res) => {
     const calledNumbers = [];
     
     selected.forEach(item => {
-        // numberがない予約にフォールバック値（9999）を付与してクラッシュを防ぐ
-        const reservationNumber = item.data.number !== undefined ? item.data.number : 9999;
+        // 予約番号は既に文字列（例: "55-1"）
+        const reservationNumber = item.data.number !== undefined ? item.data.number : '99-99'; 
         
         const rRef = db.collection('reservations').doc(item.id);
         
         batch.update(rRef, { 
             status: 'called', 
             calledAt: now,
-            number: reservationNumber
+            number: reservationNumber // 文字列をそのまま保存
         });
         
         calledNumbers.push(reservationNumber);
@@ -320,7 +339,7 @@ app.post('/api/compute-call', async (req, res) => {
     await db.collection('logs').add({
         type: 'call',
         reservationIds: selected.map(s=>s.id),
-        available,
+        available: availablePeople, // 🚨 修正: ログに残す値
         createdAt: now
     });
 
@@ -328,13 +347,49 @@ app.post('/api/compute-call', async (req, res) => {
 });
 
 // ==========================================================
-// GET /api/tv-status (TV表示用ルート)
+// GET /api/tv-status (TV表示用ルート - 10分ルールを適用)
 // ==========================================================
 app.get('/api/tv-status', async (req, res) => {
-    // 現在呼び出し中の番号リストを返す
     try {
         const doc = await db.doc('tv/state').get();
-        res.json(doc.exists ? doc.data() : { currentCalled: [], updatedAt: null });
+        if (!doc.exists) {
+            return res.json({ currentCalled: [], updatedAt: null });
+        }
+
+        const data = doc.data();
+        const now = new Date();
+        
+        // TVに表示中の番号がない、またはデータがない場合はスキップ
+        if (!data.currentCalled || data.currentCalled.length === 0) {
+            return res.json({ currentCalled: [], updatedAt: data.updatedAt });
+        }
+
+        // 🚨 修正: 呼び出された予約ドキュメントを再確認する
+        const calledReservationSnap = await db.collection('reservations')
+            .where('status', 'in', ['called', 'seatEnter']) // called または seatEnter の状態にあるものをチェック
+            .where('number', 'in', data.currentCalled) // TVに表示中の番号のみを検索
+            .get();
+            
+        const stillCalledNumbers = [];
+        const TEN_MINUTES_MS = 10 * 60 * 1000;
+
+        calledReservationSnap.forEach(rDoc => {
+            const rData = rDoc.data();
+            // calledAtがない場合は、その予約は表示すべきではないのでスキップ (フォールバックは不要)
+            if (!rData.calledAt) return; 
+
+            const calledAt = rData.calledAt.toDate(); 
+            
+            // 🚨 ロジック: 呼び出し時刻から10分以内なら表示を継続
+            if (now.getTime() - calledAt.getTime() < TEN_MINUTES_MS) {
+                stillCalledNumbers.push(rData.number);
+            }
+            // 10分経過した予約はここではステータスを変更せず、単にTVから消すだけにする
+        });
+
+        // 🚨 応答: 10分経過していない番号のリストを返す
+        res.json({ currentCalled: stillCalledNumbers, updatedAt: data.updatedAt });
+
     } catch (e) {
         console.error("Error fetching tv status:", e);
         res.status(500).json({ error: "Failed to fetch status" });
