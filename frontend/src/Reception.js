@@ -11,12 +11,24 @@ export default function Reception() {
   const [people, setPeople] = useState(1);
   const [wantsLine, setWantsLine] = useState(false);
   
-  // 🚨 追加: 団体名 State。初期値は'5-5'
-  const [group, setGroup] = useState('5-5');
+  // 🚨 修正: ローカルストレージを使って初期値を設定
+  const [group, setGroup] = useState(() => {
+      const savedGroup = localStorage.getItem('lastGroup');
+      return savedGroup || '5-5'; // 読み込めない場合は '5-5' を初期値とする
+  });
+
+  // 🚨 追加: グループ選択のロック状態 (デフォルトでロック)
+  const [isGroupLocked, setIsGroupLocked] = useState(true);
 
   // 予約が成功し、QRコードを表示すべきか
   const [isReserved, setIsReserved] = useState(false);
   const [reservedNumber, setReservedNumber] = useState(null);
+
+  // 🚨 追加: 団体変更時にローカルストレージに保存するハンドラ
+  const handleGroupChange = (newGroup) => {
+      setGroup(newGroup);
+      localStorage.setItem('lastGroup', newGroup);
+  };
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -35,7 +47,7 @@ export default function Reception() {
             name,
             people: Number(people),
             wantsLine,
-            group, // 🚨 サーバーに団体名（グループ）を送信
+            group, // サーバーに団体名（グループ）を送信
           }),
         });
 
@@ -46,29 +58,28 @@ export default function Reception() {
         const result = await response.json();
         const number = result.number; // サーバーから複合番号（例: "55-1"）が返ってくる
 
-        // フォームをリセット
+        // フォームをリセット (GroupはLocalStorageから読み込んでいるため、ここではリセットしない)
         setName('');
         setPeople(1);
         setWantsLine(false);
-        setGroup('5-5'); // グループもリセット
         
         // 予約成功後の処理を条件分岐
         if (wantsLine) {
             // LINE通知希望の場合は、QRコード表示画面へ
             setReservedNumber(number);
             setIsReserved(true);
-            // NOTE: alert()はブラウザ環境では非推奨ですが、元のコードに合わせて使用しています。
+            // NOTE: alert()はブラウザ環境では非推奨ですが、カスタムモーダルUIへの変更を推奨します。
             alert(`登録完了！受付番号は【${number}】番です。\nLINEの友だち追加をしてください。`);
         } else {
             // LINE通知不要の場合は、番号をアラートで表示して完了
-            // NOTE: alert()はブラウザ環境では非推奨ですが、元のコードに合わせて使用しています。
+            // NOTE: alert()はブラウザ環境では非推奨ですが、カスタムモーダルUIへの変更を推奨します。
             alert(`登録完了！受付番号は【${number}】番です。`);
         }
         
 
     } catch (error) {
       console.error(error);
-      // NOTE: alert()はブラウザ環境では非推奨ですが、元のコードに合わせて使用しています。
+      // NOTE: alert()はブラウザ環境では非推奨ですが、カスタムモーダルUIへの変更を推奨します。
       alert('登録処理中にエラーが発生しました。サーバーまたはネットワークを確認してください。');
     }
   }
@@ -91,7 +102,7 @@ export default function Reception() {
             
             <button
                 onClick={() => setIsReserved(false)}
-                style={{ padding: '10px 20px', backgroundColor: '#333', color: 'white', border: 'none', cursor: 'pointer', marginTop: '20px' }}
+                style={{ padding: '10px 20px', backgroundColor: '#333', color: 'white', border: 'none', cursor: 'pointer', marginTop: '20px', borderRadius: '4px' }}
             >
                 受付画面に戻る
             </button>
@@ -105,20 +116,39 @@ export default function Reception() {
       <h1>受付</h1>
       <form onSubmit={handleSubmit}>
         
-        {/* 🚨 追加: 団体選択ドロップダウン */}
+        {/* 🚨 修正: 団体選択ドロップダウンとロックボタン */}
         <div style={{ marginBottom: '10px' }}>
-            <label>
-              団体を選択：
-              <select
-                  value={group}
-                  onChange={(e) => setGroup(e.target.value)}
-                  required
-                  style={{ width: '100%', padding: '8px' }}
-              >
-                  <option value="5-5">団体 5-5</option>
-                  <option value="5-2">団体 5-2</option>
-              </select>
-            </label>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                <label style={{ flexGrow: 1 }}>
+                    団体を選択：
+                    <select
+                        value={group}
+                        onChange={(e) => handleGroupChange(e.target.value)} // 🚨 修正: 専用ハンドラを使用
+                        required
+                        disabled={isGroupLocked} // 🚨 ロック状態に応じて無効化
+                        style={{ width: '100%', padding: '8px', boxSizing: 'border-box', border: '1px solid #ccc', borderRadius: '4px' }}
+                    >
+                        <option value="5-5">団体 5-5</option>
+                        <option value="5-2">団体 5-2</option>
+                    </select>
+                </label>
+                <button
+                    type="button"
+                    onClick={() => setIsGroupLocked(!isGroupLocked)} // 🚨 ボタンでロックを切り替え
+                    style={{
+                        padding: '8px 12px',
+                        cursor: 'pointer',
+                        backgroundColor: isGroupLocked ? '#f44336' : '#4CAF50', // ロック状態で色を変える
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        marginTop: '23px', // ラベルと入力欄の間に合うように調整
+                        whiteSpace: 'nowrap'
+                    }}
+                >
+                    {isGroupLocked ? '🔓 ロック解除' : '🔒 ロック中'}
+                </button>
+            </div>
         </div>
         
         <div style={{ marginBottom: '10px' }}>
@@ -129,7 +159,7 @@ export default function Reception() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
-              style={{ width: '100%', padding: '8px' }}
+              style={{ width: '100%', padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }}
             />
           </label>
         </div>
@@ -141,7 +171,7 @@ export default function Reception() {
               value={people}
               min={1}
               onChange={(e) => setPeople(e.target.value)}
-              style={{ width: '100%', padding: '8px' }}
+              style={{ width: '100%', padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }}
             />
           </label>
         </div>
@@ -151,13 +181,14 @@ export default function Reception() {
               type="checkbox"
               checked={wantsLine}
               onChange={(e) => setWantsLine(e.target.checked)}
+              style={{ marginRight: '8px' }}
             />
             LINEで通知希望
           </label>
         </div>
         <button
           type="submit"
-          style={{ padding: '10px 20px', backgroundColor: '#4CAF50', color: 'white', border: 'none', cursor: 'pointer' }}
+          style={{ padding: '10px 20px', backgroundColor: '#4CAF50', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '4px' }}
         >
           登録
         </button>
