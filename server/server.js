@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors'); 
 const admin = require('firebase-admin');
-const fetch = require('node-fetch'); // node-fetchを使う場合はインストールが必要です
+const fetch = require('node-fetch');
 
 const app = express();
 
@@ -29,7 +29,7 @@ const db = admin.firestore();
 const MAX_PER_PERSON_DOC = 'settings/system';
 
 // ==========================================================
-// LINE Push通知ユーティリティ (管理画面からの呼び出し用)
+// LINE Push通知ユーティリティ
 // ==========================================================
 
 async function sendLinePush(toUserId, messageText) {
@@ -54,10 +54,11 @@ async function sendLinePush(toUserId, messageText) {
     }
 }
 
+
 // ==========================================================
-// LINE Replyユーティリティ (Webhook応答用)
+// LINE Replyユーティリティ (Webhookイベントの応答用)  <-- A: 追加
 // ==========================================================
-// Webhookイベント応答に必要な関数
+
 async function sendLineReply(replyToken, messageText) {
     if (!process.env.LINE_ACCESS_TOKEN) return;
 
@@ -134,18 +135,18 @@ app.post('/api/reserve', async (req, res) => {
 });
 
 // ==========================================================
-// POST /api/line-webhook: LINEからのイベント処理 (番号入力/変更承認ロジック)
+// POST /api/line-webhook: LINEからのイベント処理 (番号入力による紐付け) <-- B: 完全に置き換え
 // ==========================================================
 app.post('/api/line-webhook', async (req, res) => {
-    
-    // 署名検証は省略
-    
+
     const events = req.body.events;
     if (!events || events.length === 0) return res.sendStatus(200);
 
     for (const event of events) {
         const lineUserId = event.source.userId;
         const replyToken = event.replyToken;
+        // メッセージイベントではない場合、inputTextはnullまたは空文字列になる
+        const inputText = (event.type === 'message' && event.message.type === 'text') ? event.message.text.trim() : null;
 
         // -----------------------------------------------------
         // 1. 友だち追加時 (follow)
@@ -153,47 +154,42 @@ app.post('/api/line-webhook', async (req, res) => {
         if (event.type === 'follow') {
             const message = '友だち追加ありがとうございます！\n準備完了の通知をご希望の場合は、お手持ちの「受付番号」をメッセージで送信してください。例: 12';
             await sendLineReply(replyToken, message);
-        } 
-        
+        }
+
         // -----------------------------------------------------
-        // 2. テキストメッセージ受信時 (message type: text)
+        // 2. 「はい」のメッセージ受信時 (変更承認)
         // -----------------------------------------------------
-        else if (event.type === 'message' && event.message.type === 'text') {
-            
-            const inputText = event.message.text.trim();
-            
-            // 「はい」のメッセージは、次のセクションで特別に処理
-            if (inputText === 'はい') {
-                
-                // 🚨 自分のIDが pendingLineUserId に設定されている予約を探す
-                const pendingSnap = await db.collection('reservations')
-                    .where('pendingLineUserId', '==', lineUserId)
-                    .where('status', '==', 'waiting') 
-                    .limit(1)
-                    .get();
+        else if (event.type === 'message' && inputText === 'はい') {
 
-                if (pendingSnap.empty) {
-                    // 「はい」と送ってきたが、保留中の変更がない場合
-                    await sendLineReply(replyToken, '申し訳ありません、変更を保留中の番号が見つかりませんでした。再度番号を送信してください。');
-                    continue;
-                }
-                
-                const docRef = pendingSnap.docs[0].ref;
-                const reservationNumber = pendingSnap.docs[0].data().number;
+            const pendingSnap = await db.collection('reservations')
+                .where('pendingLineUserId', '==', lineUserId)
+                .where('status', '==', 'waiting')
+                .limit(1)
+                .get();
 
-                // 変更を実行
-                await docRef.update({
-                    lineUserId: lineUserId,         // 🚨 新しいIDに更新
-                    pendingLineUserId: admin.firestore.FieldValue.delete() // 🚨 保留フィールドを削除
-                });
-
-                const successMessage = `番号 ${reservationNumber} の通知先を、このアカウントに変更しました！準備ができたら通知します。`;
-                await sendLineReply(replyToken, successMessage);
-                continue; // 処理完了
+            if (pendingSnap.empty) {
+                await sendLineReply(replyToken, '申し訳ありません、変更を保留中の番号が見つかりませんでした。再度番号を送信してください。');
+                continue;
             }
 
+            const docRef = pendingSnap.docs[0].ref;
+            const reservationNumber = pendingSnap.docs[0].data().number;
 
-            // 予約番号の入力処理
+            // 変更を実行
+            await docRef.update({
+                lineUserId: lineUserId,
+                pendingLineUserId: admin.firestore.FieldValue.delete()
+            });
+
+            const successMessage = `番号 ${reservationNumber} の通知先を、このアカウントに変更しました！準備ができたら通知します。`;
+            await sendLineReply(replyToken, successMessage);
+        }
+
+        // -----------------------------------------------------
+        // 3. テキストメッセージ受信時 (番号入力)
+        // -----------------------------------------------------
+        else if (event.type === 'message' && event.message.type === 'text') {
+
             const reservationNumber = parseInt(inputText, 10);
 
             // A. 有効な数値ではない場合（文字などが送られてきた場合）
@@ -206,8 +202,8 @@ app.post('/api/line-webhook', async (req, res) => {
             // B. 予約番号の検索
             const reservationSnap = await db.collection('reservations')
                 .where('number', '==', reservationNumber)
-                .where('status', '==', 'waiting')  
-                .where('wantsLine', '==', true) 
+                .where('status', '==', 'waiting')
+                .where('wantsLine', '==', true)
                 .limit(1)
                 .get();
 
@@ -218,28 +214,25 @@ app.post('/api/line-webhook', async (req, res) => {
                 continue;
             }
 
-            // 該当予約のデータとリファレンス
             const doc = reservationSnap.docs[0];
             const docData = doc.data();
             const docRef = doc.ref;
-            
+
             // C. 既にLINE IDが紐付いているかチェック
             if (docData.lineUserId) {
-                // 紐付いているLINE IDが自分自身のものである場合 (二重通知設定)
                 if (docData.lineUserId === lineUserId) {
+                    // 自分自身のものである場合 (二重通知設定)
                     const message = `番号 ${reservationNumber} は既にあなたのLINEに紐付け済みです。準備ができたら通知します！`;
                     await sendLineReply(replyToken, message);
                 } else {
-                    // 🚨 別のユーザーのLINE IDが紐付いている場合（変更要求）
+                    // 🚨 別のユーザーのLINE IDが紐付いている場合（変更希望を尋ねる）
                     const message = `番号 ${reservationNumber} は、既に別のLINEアカウントに紐付けされています。\n\n**この番号の通知先を、このアカウントに変更しますか？**\n\n変更する場合は【はい】と返信してください。`;
                     await sendLineReply(replyToken, message);
-                    
-                    // 🚨 暫定的な「変更希望」を記録
                     await docRef.update({
-                        pendingLineUserId: lineUserId // このLINE IDが変更を希望している
+                        pendingLineUserId: lineUserId
                     });
                 }
-                continue; 
+                continue;
             }
 
             // D. 新規紐付けの実行
