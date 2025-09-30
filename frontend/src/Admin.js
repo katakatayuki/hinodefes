@@ -1,3 +1,4 @@
+/* global __firebase_config */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, updateDoc, deleteDoc, getDocs, collection, query, where, orderBy } from 'firebase/firestore';
