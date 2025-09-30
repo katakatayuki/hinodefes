@@ -1,241 +1,198 @@
 import React, { useState } from 'react';
-import { Loader, AlertTriangle, CheckCircle } from 'lucide-react';
 
 // 🚨 【要変更】あなたのRenderサーバーのURLに置き換えてください
-// window.location.originを使用することで、同一オリジンの場合はパスのみでOK
-const SERVER_URL = window.location.origin; 
+const SERVER_URL = "https://hinodefes.onrender.com"; 
 // 🚨 【要変更】LINE友だち追加QRコード画像のURLに置き換えてください
-const LINE_QR_CODE_URL = 'https://hinodefes-57609.web.app/QRCODE.png';
-
-// --- Component: Custom Modal (alert/confirmの代わり) ---
-const CustomModal = ({ title, message, isOpen, onClose, isError = false }) => {
-    if (!isOpen) return null;
-
-    return (
-        <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all">
-                <div className="p-6">
-                    <div className="flex items-center mb-4">
-                        {isError ? (
-                            <AlertTriangle className="h-6 w-6 text-red-500 mr-3" />
-                        ) : (
-                            <CheckCircle className="h-6 w-6 text-green-500 mr-3" />
-                        )}
-                        <h3 className="text-xl font-bold text-gray-800">{title}</h3>
-                    </div>
-                    <p className="text-gray-600 whitespace-pre-wrap border-t pt-4">{message}</p>
-                </div>
-                <div className="bg-gray-50 px-6 py-4 flex justify-end">
-                    <button
-                        onClick={onClose}
-                        className="px-6 py-2 text-white bg-blue-600 rounded-lg font-semibold shadow-md hover:bg-blue-700 transition"
-                    >
-                        OK
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-};
+// Firebase Hostingにアップロードした画像パスを設定
+const LINE_QR_CODE_URL = 'https://hinodefes-57609.web.app/QRCODE.png'; 
 
 export default function Reception() {
-    const [name, setName] = useState('');
-    const [people, setPeople] = useState(1);
-    const [wantsLine, setWantsLine] = useState(false);
-    const [isSubmitting, setIsSubmitting] = useState(false);
+  const [name, setName] = useState('');
+  const [people, setPeople] = useState(1);
+  const [wantsLine, setWantsLine] = useState(false);
+  
+  // 🚨 修正: ローカルストレージを使って初期値を設定
+  const [group, setGroup] = useState(() => {
+      const savedGroup = localStorage.getItem('lastGroup');
+      return savedGroup || '5-5'; // 読み込めない場合は '5-5' を初期値とする
+  });
+
+  // 🚨 追加: グループ選択のロック状態 (デフォルトでロック)
+  const [isGroupLocked, setIsGroupLocked] = useState(true);
+
+  // 予約が成功し、QRコードを表示すべきか
+  const [isReserved, setIsReserved] = useState(false);
+  const [reservedNumber, setReservedNumber] = useState(null);
+
+  // 🚨 追加: 団体変更時にローカルストレージに保存するハンドラ
+  const handleGroupChange = (newGroup) => {
+      setGroup(newGroup);
+      localStorage.setItem('lastGroup', newGroup);
+  };
+
+  async function handleSubmit(e) {
+    e.preventDefault();
     
-    // 団体選択を削除したため、団体名は固定値とする
-    const group = "一般"; 
+    // 既存の予約画面に戻す
+    setIsReserved(false); 
+    setReservedNumber(null);
 
-    const [isReserved, setIsReserved] = useState(false);
-    const [reservedNumber, setReservedNumber] = useState(null);
+    try {
+        const response = await fetch(`${SERVER_URL}/api/reserve`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            name,
+            people: Number(people),
+            wantsLine,
+            group, // サーバーに団体名（グループ）を送信
+          }),
+        });
 
-    // モーダル管理ステート
-    const [modal, setModal] = useState({ isOpen: false, title: '', message: '', isError: false });
-    const openModal = (title, message, isError = false) => setModal({ isOpen: true, title, message, isError });
-    const closeModal = () => setModal({ isOpen: false, title: '', message: '', isError: false });
+        if (!response.ok) {
+          throw new Error(`API登録に失敗しました: ${response.statusText}`);
+        }
 
-    async function handleSubmit(e) {
-        e.preventDefault();
+        const result = await response.json();
+        const number = result.number; // サーバーから複合番号（例: "55-1"）が返ってくる
+
+        // フォームをリセット (GroupはLocalStorageから読み込んでいるため、ここではリセットしない)
+        setName('');
+        setPeople(1);
+        setWantsLine(false);
         
-        if (name.trim() === '') {
-            openModal("エラー", "お名前を入力してください。", true);
-            return;
+        // 予約成功後の処理を条件分岐
+        if (wantsLine) {
+            // LINE通知希望の場合は、QRコード表示画面へ
+            setReservedNumber(number);
+            setIsReserved(true);
+            // NOTE: alert()はブラウザ環境では非推奨ですが、カスタムモーダルUIへの変更を推奨します。
+            alert(`登録完了！受付番号は【${number}】番です。\nLINEの友だち追加をしてください。`);
+        } else {
+            // LINE通知不要の場合は、番号をアラートで表示して完了
+            // NOTE: alert()はブラウザ環境では非推奨ですが、カスタムモーダルUIへの変更を推奨します。
+            alert(`登録完了！受付番号は【${number}】番です。`);
         }
+        
 
-        if (people <= 0) {
-            openModal("エラー", "人数は1人以上で入力してください。", true);
-            return;
-        }
-
-        setIsSubmitting(true);
-        setIsReserved(false); 
-        setReservedNumber(null);
-
-        try {
-            const response = await fetch(`${SERVER_URL}/api/reserve`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    name: name.trim(),
-                    people: Number(people),
-                    wantsLine,
-                    group, // 固定の団体名「一般」を送信
-                }),
-            });
-
-            if (!response.ok) {
-                const errorBody = await response.json().catch(() => ({ message: response.statusText }));
-                throw new Error(errorBody.message || `API登録に失敗しました: ${response.statusText}`);
-            }
-
-            const result = await response.json();
-            const number = result.number; // サーバーから複合番号（例: "55-1"）が返ってくる
-
-            // フォームをリセット
-            setName('');
-            setPeople(1);
-            setWantsLine(false);
-            
-            // 予約成功後の処理を条件分岐
-            if (wantsLine) {
-                setReservedNumber(number);
-                setIsReserved(true);
-                openModal("登録完了", `登録しました。\n受付番号は【${number}】番です。\n引き続きLINEの友だち追加をお願いします。`);
-            } else {
-                openModal("登録完了", `登録しました。\n受付番号は【${number}】番です。`, false);
-            }
-            
-        } catch (error) {
-            console.error(error);
-            openModal('登録失敗', `登録処理中にエラーが発生しました。\nエラー: ${error.message || 'ネットワークまたはサーバーを確認してください。'}`, true);
-        } finally {
-            setIsSubmitting(false);
-        }
+    } catch (error) {
+      console.error(error);
+      // NOTE: alert()はブラウザ環境では非推奨ですが、カスタムモーダルUIへの変更を推奨します。
+      alert('登録処理中にエラーが発生しました。サーバーまたはネットワークを確認してください。');
     }
+  }
 
-    // 予約完了後のQRコード表示画面
-    if (isReserved && reservedNumber !== null) {
-        return (
-            <div className="bg-white p-6 sm:p-8 rounded-xl shadow-2xl max-w-lg mx-auto border-t-8 border-green-500 text-center min-h-[500px]">
-                <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-4" />
-                <h1 className="text-3xl font-extrabold text-gray-800 mb-2">登録完了！</h1>
-                
-                <p className="text-xl font-medium text-gray-600 mt-4">受付番号:</p>
-                <h2 className="text-5xl font-extrabold text-red-600 mb-6">{reservedNumber}</h2>
-                
-                <h3 className="text-2xl font-bold text-gray-700 mt-6">LINE通知設定</h3>
-                <p className="text-sm text-gray-600 mb-4">準備完了の通知を受け取るため、以下のQRコードをLINEで読み取り、**友だち追加**してください。</p>
-                
-                <img 
-                    src={LINE_QR_CODE_URL} 
-                    alt="LINE友だち追加QRコード" 
-                    className="w-48 h-48 border border-gray-300 mx-auto my-6 rounded-lg shadow-md"
-                    onError={(e) => {e.target.onerror = null; e.target.src="https://placehold.co/250x250/FCA5A5/FFFFFF?text=QR+Code+Error"}} // 画像URLエラー時のフォールバック
-                />
-                
-                <button
-                    onClick={() => setIsReserved(false)}
-                    className="w-full py-3 px-4 bg-gray-700 text-white font-semibold rounded-lg shadow-md hover:bg-gray-800 transition duration-150 mt-4"
-                >
-                    受付画面に戻る
-                </button>
-                <CustomModal 
-                    title={modal.title} 
-                    message={modal.message} 
-                    isOpen={modal.isOpen} 
-                    onClose={closeModal} 
-                    isError={modal.isError}
-                />
-            </div>
-        );
-    }
-
-    // 通常の受付フォーム
-    return (
-        <div className="min-h-screen bg-gray-100 p-4 sm:p-6 flex flex-col items-center justify-center font-sans">
-            <div className="bg-white p-6 sm:p-8 rounded-xl shadow-2xl w-full max-w-lg border-t-8 border-green-500">
-                <h1 className="text-3xl font-extrabold text-gray-800 mb-6 text-center">受付</h1>
-                
-                <form onSubmit={handleSubmit} className="space-y-6">
-                    {/* 団体情報 (固定表示) */}
-                    <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
-                        <p className="text-sm font-medium text-gray-600">団体名 (固定):</p>
-                        <p className="text-xl font-bold text-gray-800">{group}</p>
-                    </div>
-
-                    {/* 1. 名前 */}
-                    <div>
-                        <label htmlFor="name" className="block text-lg font-medium text-gray-700 mb-1">お名前:</label>
-                        <input
-                            type="text"
-                            id="name"
-                            value={name}
-                            onChange={(e) => setName(e.target.value)}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-green-500 focus:border-green-500 text-lg"
-                            placeholder="お名前（ニックネーム可）"
-                            required
-                            disabled={isSubmitting}
-                        />
-                    </div>
-
-                    {/* 2. 人数 */}
-                    <div>
-                        <label htmlFor="people" className="block text-lg font-medium text-gray-700 mb-1">人数:</label>
-                        <input
-                            type="number"
-                            id="people"
-                            value={people}
-                            onChange={(e) => setPeople(Math.max(1, Number(e.target.value)))}
-                            min="1"
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-green-500 focus:border-green-500 text-lg"
-                            required
-                            disabled={isSubmitting}
-                        />
-                    </div>
-
-                    {/* 3. LINE通知希望 */}
-                    <div className="flex items-center pt-2">
-                        <input
-                            id="line-notify"
-                            type="checkbox"
-                            checked={wantsLine}
-                            onChange={(e) => setWantsLine(e.target.checked)}
-                            className="h-5 w-5 text-green-600 border-gray-300 rounded focus:ring-green-500"
-                            disabled={isSubmitting}
-                        />
-                        <label htmlFor="line-notify" className="ml-3 text-base font-medium text-gray-700">
-                            LINEで通知希望
-                        </label>
-                    </div>
-
-                    {/* 4. 登録ボタン */}
-                    <button
-                        type="submit"
-                        disabled={isSubmitting}
-                        className="w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-lg shadow-md text-xl font-semibold text-white bg-green-600 hover:bg-green-700 transition duration-150 ease-in-out disabled:bg-green-400 disabled:cursor-not-allowed mt-8"
-                    >
-                        {isSubmitting ? (
-                            <>
-                                <Loader className="animate-spin h-5 w-5 mr-3" />
-                                登録中...
-                            </>
-                        ) : (
-                            '登録'
-                        )}
-                    </button>
-                </form>
-            </div>
+  // 予約完了後のQRコード表示画面
+  if (isReserved && reservedNumber !== null) {
+      return (
+          <div style={{ padding: '20px', maxWidth: '400px', margin: 'auto', textAlign: 'center' }}>
+            <h1>登録完了！</h1>
+            <h2>受付番号: <span style={{ color: 'red', fontSize: '2em' }}>{reservedNumber}</span> 番</h2>
             
-            <CustomModal 
-                title={modal.title} 
-                message={modal.message} 
-                isOpen={modal.isOpen} 
-                onClose={closeModal} 
-                isError={modal.isError}
+            <h3 style={{ marginTop: '30px' }}>LINE通知設定</h3>
+            <p>準備完了の通知を受け取るため、以下のQRコードをLINEで読み取り、**友だち追加**してください。</p>
+            
+            <img 
+                src={LINE_QR_CODE_URL} 
+                alt="LINE友だち追加QRコード" 
+                style={{ width: '250px', height: '250px', border: '1px solid #ccc', margin: '20px 0' }} 
             />
+            
+            <button
+                onClick={() => setIsReserved(false)}
+                style={{ padding: '10px 20px', backgroundColor: '#333', color: 'white', border: 'none', cursor: 'pointer', marginTop: '20px', borderRadius: '4px' }}
+            >
+                受付画面に戻る
+            </button>
+          </div>
+      );
+  }
+
+  // 通常の受付フォーム
+  return (
+    <div style={{ padding: '20px', maxWidth: '400px', margin: 'auto' }}>
+      <h1>受付</h1>
+      <form onSubmit={handleSubmit}>
+        
+        {/* 🚨 修正: 団体選択ドロップダウンとロックボタン */}
+        <div style={{ marginBottom: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                <label style={{ flexGrow: 1 }}>
+                    団体を選択：
+                    <select
+                        value={group}
+                        onChange={(e) => handleGroupChange(e.target.value)} // 🚨 修正: 専用ハンドラを使用
+                        required
+                        disabled={isGroupLocked} // 🚨 ロック状態に応じて無効化
+                        style={{ width: '100%', padding: '8px', boxSizing: 'border-box', border: '1px solid #ccc', borderRadius: '4px' }}
+                    >
+                        <option value="5-5">団体 5-5</option>
+                        <option value="5-2">団体 5-2</option>
+                    </select>
+                </label>
+                <button
+                    type="button"
+                    onClick={() => setIsGroupLocked(!isGroupLocked)} // 🚨 ボタンでロックを切り替え
+                    style={{
+                        padding: '8px 12px',
+                        cursor: 'pointer',
+                        backgroundColor: isGroupLocked ? '#f44336' : '#4CAF50', // ロック状態で色を変える
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        marginTop: '23px', // ラベルと入力欄の間に合うように調整
+                        whiteSpace: 'nowrap'
+                    }}
+                >
+                    {isGroupLocked ? '🔓 ロック解除' : '🔒 ロック中'}
+                </button>
+            </div>
         </div>
-    );
+        
+        <div style={{ marginBottom: '10px' }}>
+          <label>
+            名前：
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              style={{ width: '100%', padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }}
+            />
+          </label>
+        </div>
+        <div style={{ marginBottom: '10px' }}>
+          <label>
+            人数：
+            <input
+              type="number"
+              value={people}
+              min={1}
+              onChange={(e) => setPeople(e.target.value)}
+              style={{ width: '100%', padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }}
+            />
+          </label>
+        </div>
+        <div style={{ marginBottom: '20px' }}>
+          <label>
+            <input
+              type="checkbox"
+              checked={wantsLine}
+              onChange={(e) => setWantsLine(e.target.checked)}
+              style={{ marginRight: '8px' }}
+            />
+            LINEで通知希望
+          </label>
+        </div>
+        <button
+          type="submit"
+          style={{ padding: '10px 20px', backgroundColor: '#4CAF50', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '4px' }}
+        >
+          登録
+        </button>
+      </form>
+    </div>
+  );
 }
