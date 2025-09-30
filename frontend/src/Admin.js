@@ -6,12 +6,10 @@ const API_URL_BASE = '';
 
 // メインコンポーネント: 待ち状況のサマリーと呼び出しに特化
 const App = () => {
-    // 認証機能（API Secret）は削除しています。
-    
     // サーバーAPIは団体別データを返すため、Summaryは維持
     const [summary, setSummary] = useState({ '5-5': { groups: 0, people: 0 }, '5-2': { groups: 0, people: 0 } });
     
-    // 呼び出し対象団体を管理するステートを追加
+    // 呼び出し対象団体を管理するステート
     const [callGroup, setCallGroup] = useState('5-5'); 
     
     // 呼び出し人数
@@ -72,7 +70,7 @@ const App = () => {
 
         // サーバーに送信するペイロード
         const payload = {
-            callGroup: callGroup, // 🚨 サーバーが要求する団体名
+            callGroup: callGroup, // サーバーが要求する団体名
             availableCount: parseInt(availableCount, 10)
         };
 
@@ -240,4 +238,3 @@ const App = () => {
 };
 
 export default App;
-```eof
