@@ -6,12 +6,15 @@ const API_URL_BASE = '';
 
 // メインコンポーネント: 待ち状況のサマリーと呼び出しに特化
 const App = () => {
-    // 認証機能は削除しました。
+    // 認証機能（API Secret）は削除しています。
     
-    // サーバーAPIは団体別データを返すため、Summaryはそのまま維持
+    // サーバーAPIは団体別データを返すため、Summaryは維持
     const [summary, setSummary] = useState({ '5-5': { groups: 0, people: 0 }, '5-2': { groups: 0, people: 0 } });
     
-    // 呼び出し人数のみを管理
+    // 呼び出し対象団体を管理するステートを追加
+    const [callGroup, setCallGroup] = useState('5-5'); 
+    
+    // 呼び出し人数
     const [availableCount, setAvailableCount] = useState(4); 
     
     const [callResult, setCallResult] = useState({ message: '', type: '' });
@@ -27,7 +30,6 @@ const App = () => {
     // ==========================================================
     const fetchSummary = async () => {
         try {
-            // /api/waiting-summary を取得し、待ち状況の合計を更新
             const response = await fetch(`${API_URL_BASE}/api/waiting-summary`);
             if (!response.ok) throw new Error('Summary fetch failed');
             const data = await response.json();
@@ -50,7 +52,6 @@ const App = () => {
         }
     }, [isLoading]);
 
-    // 認証が不要になったため、常にデータをロードし続けます。
     useEffect(() => {
         fetchData();
         const interval = setInterval(fetchData, 5000); // 5秒ごとに更新
@@ -58,24 +59,20 @@ const App = () => {
     }, [fetchData]);
 
     // ==========================================================
-    // 呼び出し操作 (団体指定UIがないため、'5-5'をハードコード)
+    // 呼び出し操作
     // ==========================================================
     const handleCall = async () => {
-        // API Secretのチェックを削除しました
-        if (!availableCount || availableCount <= 0) {
-            setCallResult({ message: '空き人数を正しく入力してください。', type: 'error' });
+        if (!availableCount || availableCount <= 0 || !callGroup) {
+            setCallResult({ message: '空き人数と団体を正しく選択してください。', type: 'error' });
             return;
         }
-
-        // サーバー側の要求に合わせ、呼び出す団体を「5-5」に固定します。
-        const callGroup = '5-5'; 
 
         setIsLoading(true);
         setCallResult({ message: '呼び出し処理を実行中です...', type: 'info' });
 
+        // サーバーに送信するペイロード
         const payload = {
-            // apiSecretを削除しました
-            callGroup: callGroup, 
+            callGroup: callGroup, // 🚨 サーバーが要求する団体名
             availableCount: parseInt(availableCount, 10)
         };
 
@@ -97,7 +94,7 @@ const App = () => {
                 } else {
                     setCallResult({ message: `団体 ${callGroup} には呼び出し可能な待ち組がいませんでした。`, type: 'warning' });
                 }
-                fetchData(); // 成功後、Summaryをリロード
+                fetchData(); 
             } else {
                 const errorMessage = data.message || data.error || response.statusText;
                 setCallResult({ message: `呼び出し失敗: ${errorMessage}`, type: 'error' });
@@ -161,10 +158,10 @@ const App = () => {
             <div className="max-w-4xl mx-auto">
                 <h1 className="text-4xl font-extrabold text-gray-800 mb-6 border-b-4 border-primary pb-3 flex items-center">
                     <Bell className="w-8 h-8 mr-3 text-primary" />
-                    受付システム 管理ダッシュボード (最初期版)
+                    受付システム 管理ダッシュボード
                 </h1>
 
-                {/* 接続設定パネル (削除され、更新ボタンのみが残りました) */}
+                {/* 更新ボタンのみ */}
                 <div className="bg-white p-6 rounded-xl shadow-lg mb-8 border-t-4 border-indigo-500 flex justify-end">
                     <button 
                         onClick={fetchData} 
@@ -189,14 +186,31 @@ const App = () => {
                             {renderSummaryCard('総待ち人数', `${totalWaitingPeople} 人`)}
                             {renderSummaryCard('総待ち組数', `${totalWaitingGroups} 組`)}
                         </div>
+                        <div className="mt-4 pt-4 border-t border-indigo-200">
+                            <h3 className="text-lg font-semibold text-gray-700 mb-2">団体別内訳</h3>
+                            <p className="text-sm">
+                                5-5: {summary['5-5'].people}人 ({summary['5-5'].groups}組) / 
+                                5-2: {summary['5-2'].people}人 ({summary['5-2'].groups}組)
+                            </p>
+                        </div>
                     </div>
 
                     {/* 呼び出しコントロール */}
                     <div className="bg-white p-6 rounded-xl shadow-lg border-t-4 border-green-500">
                         <h2 className="text-2xl font-semibold text-green-700 mb-4">
-                            呼び出し実行 (団体 5-5 を対象)
+                            呼び出し実行
                         </h2>
                         <div className="space-y-4">
+                            {/* 団体選択ドロップダウン */}
+                            <select 
+                                value={callGroup}
+                                onChange={(e) => setCallGroup(e.target.value)}
+                                className="p-3 border-2 border-gray-300 rounded-xl w-full focus:ring-primary focus:border-primary transition duration-150 font-bold text-lg"
+                            >
+                                <option value="5-5">団体 5-5 を呼び出す</option>
+                                <option value="5-2">団体 5-2 を呼び出す</option>
+                            </select>
+
                             <input 
                                 type="number" 
                                 id="availableCount" 
@@ -213,16 +227,12 @@ const App = () => {
                                 className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-xl w-full transition duration-150 ease-in-out shadow-md hover:shadow-lg disabled:opacity-50 flex items-center justify-center"
                             >
                                 <Bell className="w-5 h-5 mr-2" />
-                                呼び出しを実行 (5-5)
+                                呼び出しを実行 ({callGroup})
                             </button>
                         </div>
                         {renderCallResult()}
                     </div>
 
-                </div>
-
-                <div className="text-sm text-gray-500 text-center mt-8">
-                    ※この管理画面は、認証なしで動作します。
                 </div>
             </div>
         </div>
@@ -230,3 +240,4 @@ const App = () => {
 };
 
 export default App;
+```eof
