@@ -6,7 +6,7 @@ const API_BASE_URL = 'https://hinodefes.onrender.com';
 export default function TVDisplay() {
   // 🚨 修正: 呼び出し中の番号の状態
   const [calledState, setCalledState] = useState({ currentCalled: [] });
-  // 🚨 追加: 待ち状況のサマリーの状態
+  // 🚨 追加: 待ち況のサマリーの状態
   const [waitingSummary, setWaitingSummary] = useState({ 
     '5-5': { groups: 0, people: 0 }, 
     '5-2': { groups: 0, people: 0 } 
