@@ -5,7 +5,7 @@ const fetch = require('node-fetch');
 
 const app = express();
 
-// CORSを詳細に設定
+// CORSを詳細に設
 app.use(cors({
     origin: '*',  // すべてのドメインからのアクセスを許可
     methods: ['GET', 'POST']
