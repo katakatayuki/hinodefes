@@ -1,11 +1,8 @@
 /* global __firebase_config */
 import React, { useState, useEffect, useCallback } from 'react';
-import { initializeApp } from 'firebase/app';
-// getDocs, collection, query, where, orderBy はAdmin.jsx内で使用されていないため削除
-import { getFirestore, doc, updateDoc, deleteDoc } from 'firebase/firestore'; 
+import { Loader, Users, Clock, Trash2, CheckCircle, AlertTriangle, RefreshCw } from 'lucide-react';
 
-// RenderのAPIベースURLは、環境に合わせて絶対パスを使用するように修正します
-// 相対パスの'/api'をfetchが処理できない環境があるため、window.location.originを付加します。
+// RenderのAPIベースURL。同一オリジンのため相対パスも可能ですが、念のためwindow.location.originを使用
 const API_BASE_URL = window.location.origin + '/api'; 
 
 // 🚨 サーバーサイドの秘密鍵はクライアントサイドに露出させてはいけないため、
@@ -13,24 +10,49 @@ const API_BASE_URL = window.location.origin + '/api';
 // サーバー側でトークン/セッション認証に切り替えることを強く推奨します。
 const API_SECRET = 'dummy-secret';
 
-// Firebaseの設定をグローバル変数から取得し、初期化を試みる
-let app = null;
-let db = null;
+// --- Component: Custom Modal (alert/confirmの代わり) ---
 
-try {
-    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-    
-    // projectIdが存在する場合のみinitializeAppを呼び出すことで、クラッシュを防ぎます
-    if (firebaseConfig && firebaseConfig.projectId) {
-        app = initializeApp(firebaseConfig);
-        db = getFirestore(app);
-    } else {
-        console.error("Firebase Initialization Failed: 'projectId' not found in configuration. Firestore features (status change, delete) will not work.");
-    }
-} catch (e) {
-    console.error("Error processing Firebase config:", e);
-}
+const CustomModal = ({ title, message, isOpen, onClose, onConfirm, isConfirmation = false, isError = false }) => {
+    if (!isOpen) return null;
 
+    return (
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all">
+                <div className="p-6">
+                    <div className="flex items-center mb-4">
+                        {isError ? (
+                            <AlertTriangle className="h-6 w-6 text-red-500 mr-3" />
+                        ) : isConfirmation ? (
+                            <AlertTriangle className="h-6 w-6 text-amber-500 mr-3" />
+                        ) : (
+                            <CheckCircle className="h-6 w-6 text-blue-500 mr-3" />
+                        )}
+                        <h3 className="text-xl font-bold text-gray-800">{title}</h3>
+                    </div>
+                    <p className="text-gray-600 whitespace-pre-wrap border-t pt-4">{message}</p>
+                </div>
+                <div className="bg-gray-50 px-6 py-4 flex justify-end space-x-3">
+                    {isConfirmation && (
+                        <button
+                            onClick={onClose}
+                            className="px-4 py-2 text-gray-700 bg-gray-200 rounded-lg font-semibold hover:bg-gray-300 transition"
+                        >
+                            キャンセル
+                        </button>
+                    )}
+                    <button
+                        onClick={() => { if (onConfirm) onConfirm(); onClose(); }}
+                        className={`px-4 py-2 text-white rounded-lg font-semibold shadow-md transition ${
+                            isError || isConfirmation ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'
+                        }`}
+                    >
+                        {isConfirmation ? '実行' : 'OK'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 // ステータスを日本語名に変換するヘルパー
 const STATUS_MAP = {
@@ -38,314 +60,257 @@ const STATUS_MAP = {
     'called': '呼び出し中',
     'seatEnter': '着席済み',
     'missed': '呼出期限切れ',
+    'done': '完了'
 };
 
-// 予約リストの行コンポーネント
-const ReservationRow = ({ reservation, changeStatus, deleteReservation }) => {
-    // 状態に基づいたスタイルとテキスト
+// 予約アイテム行コンポーネント
+const ReservationRow = React.memo(({ reservation, changeStatus, deleteReservation }) => {
     const statusText = STATUS_MAP[reservation.status] || reservation.status;
-    let statusColor = 'text-gray-500';
-    if (reservation.status === 'waiting') statusColor = 'text-amber-600 font-bold';
-    if (reservation.status === 'called') statusColor = 'text-red-600 font-bold';
-    if (reservation.status === 'seatEnter') statusColor = 'text-green-600 font-bold';
-    if (reservation.status === 'missed') statusColor = 'text-gray-400 font-medium line-through'; // 期限切れ
+    
+    let statusColor = 'bg-gray-200 text-gray-800';
+    if (reservation.status === 'called') statusColor = 'bg-red-100 text-red-800 font-bold';
+    if (reservation.status === 'waiting') statusColor = 'bg-amber-100 text-amber-800';
+    if (reservation.status === 'seatEnter') statusColor = 'bg-green-100 text-green-800';
+    if (reservation.status === 'done' || reservation.status === 'missed') statusColor = 'bg-indigo-100 text-indigo-800';
 
-    const formattedDate = reservation.createdAt 
-        ? new Date(reservation.createdAt.seconds * 1000).toLocaleString('ja-JP', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-        : 'N/A';
+    const formatDate = (timestamp) => {
+        if (!timestamp) return '---';
+        const date = new Date(timestamp._seconds * 1000);
+        return date.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+    };
 
     return (
-        <tr className="hover:bg-gray-50 transition duration-100">
-            <td className="px-3 py-3 whitespace-nowrap text-lg font-bold">{reservation.number}</td>
-            {/* 団体カラムは残すが、値はN/AまたはFirestoreの値を使用 */}
-            <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-900">{reservation.group || 'N/A'}</td> 
-            <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-900">{reservation.name}</td>
-            <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-500">{reservation.people}人</td>
-            <td className="px-3 py-3 whitespace-nowrap">
-                {reservation.wantsLine ? (reservation.lineUserId ? '✅ 紐付け済' : '🔔 希望') : '❌ 不要'}
+        <tr className="hover:bg-gray-50 transition duration-150">
+            <td className="px-3 py-2 whitespace-nowrap text-sm font-medium text-amber-700 border-r">{reservation.number || '---'}</td>
+            <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900">{reservation.group}</td>
+            <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900">{reservation.name}</td>
+            <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-500">{reservation.people}人</td>
+            <td className="px-3 py-2 whitespace-nowrap">
+                <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusColor}`}>
+                    {statusText}
+                </span>
             </td>
-            <td className="px-3 py-3 whitespace-nowrap text-sm">
-                <span className={statusColor}>{statusText}</span>
-            </td>
-            <td className="px-3 py-3 whitespace-nowrap text-xs text-gray-500">{formattedDate}</td>
-            <td className="px-3 py-3 whitespace-nowrap text-right text-sm font-medium">
-                <button 
-                    onClick={() => changeStatus(reservation.id, 'seatEnter')} 
-                    className="text-green-600 hover:text-green-800 mx-1 p-1 rounded hover:bg-green-100 transition"
-                    disabled={reservation.status === 'seatEnter'}
-                >
-                    着席
-                </button>
-                <button 
-                    onClick={() => changeStatus(reservation.id, 'waiting')} 
-                    className="text-blue-600 hover:text-blue-800 mx-1 p-1 rounded hover:bg-blue-100 transition"
-                    disabled={reservation.status === 'waiting'}
-                >
-                    待機に戻す
-                </button>
-                <button 
-                    onClick={() => deleteReservation(reservation.id, reservation.number)} 
-                    className="text-red-600 hover:text-red-800 mx-1 p-1 rounded hover:bg-red-100 transition"
-                >
-                    削除
-                </button>
+            <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-500">{formatDate(reservation.createdAt)}</td>
+            <td className="px-3 py-2 whitespace-nowrap text-sm font-medium">
+                <div className="flex space-x-1">
+                    {reservation.status === 'waiting' && (
+                        <button
+                            onClick={() => changeStatus(reservation.id, 'called')}
+                            className="text-white bg-red-600 hover:bg-red-700 px-2 py-1 rounded text-xs font-semibold shadow-sm transition"
+                        >
+                            呼出
+                        </button>
+                    )}
+                    {reservation.status === 'called' && (
+                        <>
+                            <button
+                                onClick={() => changeStatus(reservation.id, 'seatEnter')}
+                                className="text-white bg-green-600 hover:bg-green-700 px-2 py-1 rounded text-xs font-semibold shadow-sm transition"
+                            >
+                                入場
+                            </button>
+                            <button
+                                onClick={() => changeStatus(reservation.id, 'missed')}
+                                className="text-white bg-red-400 hover:bg-red-500 px-2 py-1 rounded text-xs font-semibold transition"
+                            >
+                                呼出済
+                            </button>
+                        </>
+                    )}
+                    {reservation.status === 'seatEnter' && (
+                        <button
+                            onClick={() => changeStatus(reservation.id, 'done')}
+                            className="text-white bg-indigo-600 hover:bg-indigo-700 px-2 py-1 rounded text-xs font-semibold shadow-sm transition"
+                        >
+                            完了
+                        </button>
+                    )}
+                    <button
+                        onClick={() => deleteReservation(reservation.id)}
+                        className="text-gray-600 hover:text-red-600 p-1 rounded transition"
+                        title="予約を削除"
+                    >
+                        <Trash2 className="w-4 h-4" />
+                    </button>
+                </div>
             </td>
         </tr>
     );
-};
+});
 
-// メインコンポーネント
+// --- Main Admin Component ---
+
 export default function Admin() {
-    const [availablePeople, setAvailablePeople] = useState(1);
-    const [computeMessage, setComputeMessage] = useState({ text: '', type: 'info' });
-    const [waitingSummary, setWaitingSummary] = useState({ groups: '--', people: '--' });
     const [reservationList, setReservationList] = useState([]);
+    const [summary, setSummary] = useState({ groups: '---', people: '---' });
     const [listLoading, setListLoading] = useState(false);
+    const [modal, setModal] = useState({ isOpen: false, title: '', message: '', isConfirmation: false, isError: false, onConfirm: null });
 
-    // ==========================================================
-    // データフェッチ: 待ち状況サマリー
-    // ==========================================================
-    const fetchWaitingSummary = useCallback(async () => {
+    const openModal = (title, message, isError = false) => setModal({ isOpen: true, title, message, isError, isConfirmation: false, onConfirm: null });
+    const openConfirmation = (title, message, onConfirm) => setModal({ isOpen: true, title, message, isError: false, isConfirmation: true, onConfirm });
+    const closeModal = () => setModal(prev => ({ ...prev, isOpen: false }));
+
+    // 予約サマリー（待ち組数、人数）を取得する
+    const fetchSummary = useCallback(async () => {
         try {
-            // サーバー側の実装が全体集計に戻ったと仮定して、waiting-summaryを呼び出す
             const response = await fetch(`${API_BASE_URL}/waiting-summary`);
-            if (!response.ok) throw new Error('Failed to fetch summary');
-            
-            const summary = await response.json();
-            
-            // 🚨 以前の全体集計の表示ロジックに戻す
-            const totalGroups = summary.groups || 0;
-            const totalPeople = summary.people || 0;
-            
-            setWaitingSummary({ groups: totalGroups, people: totalPeople });
-
+            if (!response.ok) throw new Error('Summary API fetch failed');
+            const data = await response.json();
+            setSummary({
+                groups: data.groups || 0,
+                people: data.people || 0,
+            });
         } catch (error) {
             console.error("Error fetching summary:", error);
-            setWaitingSummary({ groups: 'エラー', people: 'エラー' });
+            setSummary({ groups: 'エラー組', people: 'エラー人' });
         }
     }, []);
 
-    // ==========================================================
-    // データフェッチ: 全予約リスト
-    // ==========================================================
-    const fetchReservations = useCallback(async () => {
+    // 予約リストを全て取得する
+    const fetchReservationList = useCallback(async () => {
         setListLoading(true);
         try {
             const response = await fetch(`${API_BASE_URL}/reservations`);
-            if (!response.ok) throw new Error('Failed to fetch reservations');
+            if (!response.ok) throw new Error('Reservations API fetch failed');
+            const data = await response.json();
             
-            const reservations = await response.json();
-            setReservationList(reservations);
+            // numberで昇順ソート（API側でソートされていなくてもここで対応）
+            const sortedData = data.sort((a, b) => (a.number || 99999) - (b.number || 99999));
 
+            setReservationList(sortedData);
         } catch (error) {
-            console.error("Error fetching reservations:", error);
+            console.error("Error fetching reservation list:", error);
+            openModal("データ取得エラー", `予約リストの取得に失敗しました。\nサーバーのログを確認してください。`, true);
             setReservationList([]);
-            // setComputeMessage({ text: '❌ 予約リストの取得に失敗しました。', type: 'error' });
+        } finally {
+            setListLoading(false);
         }
-        setListLoading(false);
-    }, []);
+    }, [openModal]);
 
-    // 初回ロードと定期更新
+    // 初回ロード時と5秒ごとの自動更新
     useEffect(() => {
-        fetchWaitingSummary();
-        fetchReservations();
-
-        const summaryId = setInterval(fetchWaitingSummary, 5000); // 5秒ごとにサマリー更新
-        const listId = setInterval(fetchReservations, 10000); // 10秒ごとにリスト更新
+        fetchSummary();
+        fetchReservationList();
+        
+        const summaryInterval = setInterval(fetchSummary, 5000);
+        const listInterval = setInterval(fetchReservationList, 10000); // リストは10秒ごと
 
         return () => {
-            clearInterval(summaryId);
-            clearInterval(listId);
+            clearInterval(summaryInterval);
+            clearInterval(listInterval);
         };
-    }, [fetchWaitingSummary, fetchReservations]);
+    }, [fetchSummary, fetchReservationList]);
 
-    // ==========================================================
-    // 呼び出し実行 (POST /api/compute-call)
-    // ==========================================================
-    const sendCompute = async () => {
-        const availableCount = Number(availablePeople);
-        
-        if (availableCount <= 0 || isNaN(availableCount)) {
-            setComputeMessage({ text: '🚨 空き人数は正の数で入力してください。', type: 'error' });
-            return;
-        }
 
-        setComputeMessage({ text: `全待機リストから呼び出しを処理中...`, type: 'loading' });
+    // ステータス変更処理 (API経由)
+    const changeStatus = useCallback(async (id, newStatus) => {
+        // 確認モーダルを表示
+        const statusText = STATUS_MAP[newStatus] || newStatus;
+        openConfirmation(
+            "ステータス変更の確認",
+            `予約ID: ${id}\nステータスを「${statusText}」に変更しますか？`,
+            async () => {
+                try {
+                    const response = await fetch(`${API_BASE_URL}/update-status`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-API-SECRET': API_SECRET, // サーバー側で認証に使用
+                        },
+                        body: JSON.stringify({ id, status: newStatus }),
+                    });
 
-        try {
-            const response = await fetch(`${API_BASE_URL}/compute-call`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    availableCount: availableCount,
-                    apiSecret: API_SECRET
-                })
-            });
-
-            const result = await response.json();
-
-            if (!response.ok || result.error) {
-                throw new Error(result.error || `Server responded with status ${response.status}`);
+                    if (!response.ok) throw new Error('Status update failed');
+                    
+                    openModal("成功", `ステータスを「${statusText}」に更新しました。`);
+                    fetchSummary();
+                    fetchReservationList(); // リストを再取得して更新
+                } catch (error) {
+                    console.error("Error updating status:", error);
+                    openModal("エラー", `ステータス変更に失敗しました。\nエラー: ${error.message}`, true);
+                }
             }
+        );
+    }, [openConfirmation, openModal, fetchSummary, fetchReservationList]);
 
-            if (result.called && result.called.length > 0) {
-                setComputeMessage({ 
-                    text: `✅ 呼び出し成功: 番号 ${result.called.join(', ')} (合計 ${result.totalNeeded} 人)`, 
-                    type: 'success' 
-                });
-            } else {
-                setComputeMessage({ 
-                    text: `ℹ️ 待機中の予約がないため、呼び出し対象はいませんでした。`, 
-                    type: 'info' 
-                });
+    // 予約削除処理 (API経由)
+    const deleteReservation = useCallback(async (id) => {
+        openConfirmation(
+            "予約削除の確認",
+            `予約ID: ${id}\nこの予約を完全に削除しますか？`,
+            async () => {
+                try {
+                    const response = await fetch(`${API_BASE_URL}/delete-reservation`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-API-SECRET': API_SECRET, // サーバー側で認証に使用
+                        },
+                        body: JSON.stringify({ id }),
+                    });
+
+                    if (!response.ok) throw new Error('Deletion failed');
+                    
+                    openModal("成功", "予約を削除しました。");
+                    fetchSummary();
+                    fetchReservationList(); // リストを再取得して更新
+                } catch (error) {
+                    console.error("Error deleting reservation:", error);
+                    openModal("エラー", `予約の削除に失敗しました。\nエラー: ${error.message}`, true);
+                }
             }
-
-        } catch (error) {
-            console.error('Compute call failed:', error);
-            setComputeMessage({ text: `❌ 呼び出し失敗: ${error.message}`, type: 'error' });
-        }
-
-        // 成功・失敗に関わらずリストとサマリーを更新
-        fetchWaitingSummary();
-        fetchReservations();
-    };
-
-    // ==========================================================
-    // ステータス変更処理 (着席、待機に戻す)
-    // ==========================================================
-    const changeStatus = async (id, newStatus) => {
-        // Firebaseが初期化されていない場合は処理を中断
-        if (!db) {
-            alert('Firebaseが正しく初期化されていません。設定を確認してください。');
-            return;
-        }
-
-        const updateData = { status: newStatus };
-        if (newStatus === 'seatEnter') {
-            updateData.seatEnterAt = new Date();
-            updateData.calledAt = null; // 着席したら呼ばれた状態は終了
-        } else if (newStatus === 'waiting') {
-            updateData.calledAt = null; 
-            updateData.seatEnterAt = null;
-        }
-        
-        try {
-            const docRef = doc(db, 'reservations', id);
-            await updateDoc(docRef, updateData);
-            console.log(`Status changed for ${id} to ${newStatus}`);
-            // 状態をローカルで更新し、次の定期フェッチで確認
-            fetchReservations(); 
-            fetchWaitingSummary();
-        } catch(e) {
-            console.error('Status change failed:', e);
-            alert(`ステータス変更失敗: ${e.message}`); // 🚨 本番環境ではカスタムモーダルを使用
-        }
-    };
-
-    // ==========================================================
-    // 予約削除処理
-    // ==========================================================
-    const deleteReservation = async (id, number) => {
-        // Firebaseが初期化されていない場合は処理を中断
-        if (!db) {
-            alert('Firebaseが正しく初期化されていません。設定を確認してください。');
-            return;
-        }
-        
-        // 🚨 本番環境では alert/confirm の代わりにカスタムモーダルを使用
-        if (!window.confirm(`本当に予約No.${number}を削除しますか？`)) return; 
-
-        try {
-            const docRef = doc(db, 'reservations', id);
-            await deleteDoc(docRef);
-            console.log(`Reservation ${id} deleted.`);
-            
-            // 状態をローカルで更新し、次の定期フェッチで確認
-            fetchReservations(); 
-            fetchWaitingSummary();
-        } catch(e) {
-            console.error('Deletion failed:', e);
-            alert(`削除失敗: ${e.message}`); // 🚨 本番環境ではカスタムモーダルを使用
-        }
-    };
-
-    // メッセージ表示のスタイル
-    const getMessageClass = (type) => {
-        switch (type) {
-            case 'success':
-                return 'mt-4 text-sm font-bold text-green-600';
-            case 'error':
-                return 'mt-4 text-sm font-bold text-red-600';
-            case 'loading':
-                return 'mt-4 text-sm text-amber-600';
-            case 'info':
-            default:
-                return 'mt-4 text-sm text-blue-600';
-        }
-    };
+        );
+    }, [openConfirmation, openModal, fetchSummary, fetchReservationList]);
 
     return (
-        <div className="bg-gray-50 p-4 min-h-screen font-sans">
-            <div className="max-w-4xl mx-auto">
-                <h1 className="text-3xl font-extrabold text-gray-800 mb-6 border-b pb-2">受付・呼び出し管理</h1>
+        <div className="min-h-screen bg-gray-100 p-4 sm:p-6 lg:p-8 font-sans">
+            <h1 className="text-3xl font-extrabold text-gray-900 mb-6 border-b pb-2">管理画面</h1>
 
-                {/* 待ち状況サマリー (全体) */}
-                <div className="bg-blue-50 border-l-4 border-blue-400 p-4 rounded-xl shadow-md mb-8">
-                    <h2 className="text-2xl font-bold text-blue-800 mb-2">現在の待ち状況 (全体)</h2>
-                    <div className="flex flex-wrap gap-6 text-xl">
-                        <p>組数: <span className="font-extrabold text-3xl text-blue-600">{waitingSummary.groups}</span> 組</p>
-                        <p>合計人数: <span className="font-extrabold text-3xl text-blue-600">{waitingSummary.people}</span> 人</p>
-                    </div>
+            {/* サマリーカード */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                {/* 1. 待ち組数 */}
+                <div className="bg-white p-5 rounded-xl shadow-lg border-l-4 border-amber-500">
+                    <p className="text-sm font-medium text-gray-500">待ち組数</p>
+                    <p className="flex items-center mt-1 text-3xl font-bold text-gray-900">
+                        <Clock className="h-6 w-6 text-amber-500 mr-2" />
+                        {summary.groups} 組
+                    </p>
                 </div>
-
-                {/* 呼び出しパネル */}
-                <div className="bg-white p-6 rounded-xl shadow-lg mb-8 border-t-4 border-amber-500">
-                    <h2 className="text-2xl font-bold text-gray-700 mb-4">次の呼び出し実行 (全待機)</h2>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-                        
-                        <div className="w-full md:col-span-2"> 
-                            <label htmlFor="availablePeople" className="block text-sm font-medium text-gray-600">空き人数 (席数)</label>
-                            <input 
-                                type="number" 
-                                id="availablePeople" 
-                                value={availablePeople} 
-                                onChange={(e) => setAvailablePeople(e.target.value)}
-                                min="1" 
-                                className="mt-1 block w-full border-gray-300 rounded-lg shadow-sm p-2 text-lg focus:ring-amber-500 focus:border-amber-500"
-                            />
-                        </div>
-                        <button 
-                            onClick={sendCompute} 
-                            className="w-full px-6 py-2 bg-red-600 text-white font-bold rounded-lg shadow-md hover:bg-red-700 transition duration-150 transform hover:scale-105 disabled:opacity-50"
-                            disabled={computeMessage.type === 'loading'}
-                        >
-                            呼び出し実行
-                        </button>
-                    </div>
-                    {computeMessage.text && (
-                        <p className={getMessageClass(computeMessage.type)}>
-                            {computeMessage.text}
-                        </p>
-                    )}
+                {/* 2. 待ち人数 */}
+                <div className="bg-white p-5 rounded-xl shadow-lg border-l-4 border-blue-500">
+                    <p className="text-sm font-medium text-gray-500">待ち人数 (合計)</p>
+                    <p className="flex items-center mt-1 text-3xl font-bold text-gray-900">
+                        <Users className="h-6 w-6 text-blue-500 mr-2" />
+                        {summary.people} 人
+                    </p>
                 </div>
+                 {/* 3. 手動更新ボタン */}
+                 <div className="flex items-center justify-center p-5">
+                    <button
+                        onClick={() => { fetchSummary(); fetchReservationList(); }}
+                        className="flex items-center justify-center bg-gray-600 hover:bg-gray-700 text-white font-semibold py-3 px-6 rounded-lg shadow-md transition"
+                        disabled={listLoading}
+                    >
+                        <RefreshCw className={`h-5 w-5 mr-2 ${listLoading ? 'animate-spin' : ''}`} />
+                        手動更新
+                    </button>
+                </div>
+            </div>
 
-                {/* 全予約リスト */}
-                <div className="bg-white p-6 rounded-xl shadow-lg">
-                    <h2 className="text-2xl font-bold text-gray-700 mb-4 flex justify-between items-center">
-                        全予約リスト (最新)
-                        <button onClick={fetchReservations} className="text-sm text-blue-500 hover:text-blue-700 p-2 rounded-md hover:bg-blue-50 transition">
-                            {listLoading ? '🔄 更新中...' : '🔄 リスト更新'}
-                        </button>
-                    </h2>
-                    <div className="overflow-x-auto">
+            {/* 予約リストテーブル */}
+            <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+                <div className="p-4 bg-gray-50 border-b">
+                    <h2 className="text-xl font-bold text-gray-800">全予約リスト</h2>
+                </div>
+                <div className="overflow-x-auto">
+                    <div className="min-w-full inline-block align-middle">
                         <table className="min-w-full divide-y divide-gray-200">
-                            <thead className="bg-gray-50">
+                            <thead className="bg-gray-100">
                                 <tr>
-                                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">番号</th>
+                                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-r">No.</th>
                                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">団体</th>
-                                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">氏名</th>
-                                    <th className-="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">人数</th>
-                                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">LINE通知</th>
+                                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">名前</th>
+                                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">人数</th>
                                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ステータス</th>
                                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">登録日時</th>
                                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
@@ -353,9 +318,9 @@ export default function Admin() {
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
                                 {listLoading && reservationList.length === 0 ? (
-                                    <tr><td colSpan="8" className="text-center py-4 text-gray-500">データを読み込み中...</td></tr>
+                                    <tr><td colSpan="7" className="text-center py-4 text-gray-500">データを読み込み中...</td></tr>
                                 ) : reservationList.length === 0 ? (
-                                    <tr><td colSpan="8" className="text-center py-4 text-gray-500">予約データがありません。</td></tr>
+                                    <tr><td colSpan="7" className="text-center py-4 text-gray-500">予約データがありません。</td></tr>
                                 ) : (
                                     reservationList.map(r => (
                                         <ReservationRow 
@@ -372,6 +337,15 @@ export default function Admin() {
                 </div>
 
             </div>
+            <CustomModal 
+                title={modal.title} 
+                message={modal.message} 
+                isOpen={modal.isOpen} 
+                onClose={closeModal} 
+                onConfirm={modal.onConfirm}
+                isConfirmation={modal.isConfirmation}
+                isError={modal.isError}
+            />
         </div>
     );
 }
