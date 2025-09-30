@@ -11,7 +11,7 @@ const API_BASE_URL = '/api';
 const API_SECRET = 'dummy-secret';
 
 // Firebaseの設定をグローバル変数から取得
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const firebaseConfig = process.env.REACT_APP_FIREBASE_CONFIG ? JSON.parse(process.env.REACT_APP_FIREBASE_CONFIG) : {};
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
