@@ -1,20 +1,36 @@
 /* global __firebase_config */
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, updateDoc, deleteDoc, getDocs, collection, query, where, orderBy } from 'firebase/firestore';
+// getDocs, collection, query, where, orderBy はAdmin.jsx内で使用されていないため削除
+import { getFirestore, doc, updateDoc, deleteDoc } from 'firebase/firestore'; 
 
-// RenderのAPIベースURLは、通常はデプロイ環境に応じて相対パスを使用します
-const API_BASE_URL = '/api'; 
+// RenderのAPIベースURLは、環境に合わせて絶対パスを使用するように修正します
+// 相対パスの'/api'をfetchが処理できない環境があるため、window.location.originを付加します。
+const API_BASE_URL = window.location.origin + '/api'; 
 
 // 🚨 サーバーサイドの秘密鍵はクライアントサイドに露出させてはいけないため、
 // 実際にはAPI側で認証を行う必要があります。ここではダミーのAPI_SECRETを使用しますが、
 // サーバー側でトークン/セッション認証に切り替えることを強く推奨します。
 const API_SECRET = 'dummy-secret';
 
-// Firebaseの設定をグローバル変数から取得
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+// Firebaseの設定をグローバル変数から取得し、初期化を試みる
+let app = null;
+let db = null;
+
+try {
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+    
+    // projectIdが存在する場合のみinitializeAppを呼び出すことで、クラッシュを防ぎます
+    if (firebaseConfig && firebaseConfig.projectId) {
+        app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+    } else {
+        console.error("Firebase Initialization Failed: 'projectId' not found in configuration. Firestore features (status change, delete) will not work.");
+    }
+} catch (e) {
+    console.error("Error processing Firebase config:", e);
+}
+
 
 // ステータスを日本語名に変換するヘルパー
 const STATUS_MAP = {
@@ -198,6 +214,12 @@ export default function Admin() {
     // ステータス変更処理 (着席、待機に戻す)
     // ==========================================================
     const changeStatus = async (id, newStatus) => {
+        // Firebaseが初期化されていない場合は処理を中断
+        if (!db) {
+            alert('Firebaseが正しく初期化されていません。設定を確認してください。');
+            return;
+        }
+
         const updateData = { status: newStatus };
         if (newStatus === 'seatEnter') {
             updateData.seatEnterAt = new Date();
@@ -224,6 +246,12 @@ export default function Admin() {
     // 予約削除処理
     // ==========================================================
     const deleteReservation = async (id, number) => {
+        // Firebaseが初期化されていない場合は処理を中断
+        if (!db) {
+            alert('Firebaseが正しく初期化されていません。設定を確認してください。');
+            return;
+        }
+        
         // 🚨 本番環境では alert/confirm の代わりにカスタムモーダルを使用
         if (!window.confirm(`本当に予約No.${number}を削除しますか？`)) return; 
 
@@ -316,7 +344,7 @@ export default function Admin() {
                                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">番号</th>
                                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">団体</th>
                                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">氏名</th>
-                                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">人数</th>
+                                    <th className-="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">人数</th>
                                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">LINE通知</th>
                                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ステータス</th>
                                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">登録日時</th>
