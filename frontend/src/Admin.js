@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-// あなたのRenderサービスのURLに置き換える
+// あなたのRederサービスのURLに置き換える
 const API_BASE_URL = 'https://hinodefes.onrender.com';
 
 export default function Admin() {
