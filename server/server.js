@@ -25,7 +25,7 @@ try {
     });
 } catch (e) {
     console.error("Firebase initialization failed. Check FIREBASE_SERVICE_ACCOUNT variable.");
-    process.exit(1);
+    process.exit(1);\
 }
 
 const db = admin.firestore();
@@ -271,13 +271,23 @@ app.get('/api/tv-status', async (req, res) => {
         // 呼び出し中 ('called') の予約を取得
         const calledSnapshot = await db.collection('reservations')
             .where('status', '==', 'called')
-            .orderBy('calledAt', 'desc') // 新しい呼び出しが上に来るように
-            .get();
+            // 🚨 修正: 複合クエリによるインデックス不足エラーを回避するため、orderByを削除
+            .get(); 
 
+        // 🚨 追加: Node.js側でソートを実行
+        let calledReservations = calledSnapshot.docs.map(doc => doc.data());
+
+        // calledAt (Timestampオブジェクト) に基づいて降順ソート
+        calledReservations.sort((a, b) => {
+            // null/undefinedの場合は0として扱う（実際にはcalled==trueなのでnullはないはずだが念のため）
+            const timeA = a.calledAt ? a.calledAt.toMillis() : 0;
+            const timeB = b.calledAt ? b.calledAt.toMillis() : 0;
+            return timeB - timeA; // 降順ソート (新しい時刻が前)
+        });
+        
         const currentCalled = [];
 
-        calledSnapshot.forEach(doc => {
-            const reservation = doc.data();
+        calledReservations.forEach(reservation => {
             // 呼び出しから10分未満のものを「呼び出し中」として表示する
             if (reservation.calledAt && reservation.calledAt.toDate() > tenMinutesAgo) {
                 currentCalled.push(reservation.number);
