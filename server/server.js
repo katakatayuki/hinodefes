@@ -8,7 +8,8 @@ const app = express();
 // CORSを詳細に設定
 app.use(cors({
     origin: '*',  // すべてのドメインからのアクセスを許可
-    methods: ['GET', 'POST', 'DELETE'] // DELETEメソッドも追加
+    // 🚨 修正1: DELETEメソッドを追加してCORSエラーを解消
+    methods: ['GET', 'POST', 'DELETE'] 
 }));
 
 app.use(express.json());
@@ -386,7 +387,6 @@ app.post('/api/compute-call', async (req, res) => {
     }
 });
 
-
 // ==========================================================
 // GET /api/waiting-summary: 団体別の待ち状況サマリー
 // ==========================================================
@@ -419,156 +419,6 @@ app.get('/api/waiting-summary', async (req, res) => {
     } catch (e) {
         console.error("Error fetching waiting summary:", e);
         res.status(500).json({ error: "Failed to fetch summary" });
-    }
-});
-
-// ==========================================================
-// POST /api/update-status (管理画面からのステータス強制変更)
-// ==========================================================
-app.post('/api/update-status', async (req, res) => {
-    
-    const { reservationId, newStatus, apiSecret } = req.body;
-
-    // 1. 認証チェック
-    if (apiSecret !== process.env.API_SECRET) {
-        return res.status(403).send('forbidden');
-    }
-
-    // 2. パラメータチェック
-    if (!reservationId || !newStatus || !['called', 'seatEnter', 'waiting'].includes(newStatus)) {
-        return res.status(400).send('Invalid parameters (reservationId or newStatus).');
-    }
-
-    try {
-        const docRef = db.collection('reservations').doc(reservationId);
-        const updateData = {
-            status: newStatus,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        };
-
-        // ステータスに応じて特定のタイムスタンプを更新
-        const now = admin.firestore.FieldValue.serverTimestamp();
-        
-        if (newStatus === 'called') {
-            updateData.calledAt = now;
-            // seatEnterAt を null に戻す（再呼び出しの可能性を考慮）
-            updateData.seatEnterAt = null; 
-        } else if (newStatus === 'seatEnter') {
-            updateData.seatEnterAt = now;
-        } else if (newStatus === 'waiting') {
-            // waitingに戻す操作は、calledAtやseatEnterAtは更新しないが、ステータスは変更する
-            // 必要に応じて、calledAtやseatEnterAtをリセットしないようにする
-        }
-
-        await docRef.update(updateData);
-        
-        // 🚨 ステータスが変更された場合、TV表示のリストも調整する（特に called の場合）
-        if (newStatus === 'called') {
-            // compute-call と同様に、TV表示リストに追加する処理を安全に行う
-            const reservationSnap = await docRef.get();
-            // ドキュメントが存在し、numberフィールドがあることを確認
-            const reservationNumber = reservationSnap.exists ? reservationSnap.data().number : null;
-
-            if (reservationNumber) {
-                const tvRef = db.doc('tv/state');
-                
-                await db.runTransaction(async (t) => {
-                    const tvSnap = await t.get(tvRef);
-                    const currentCalled = tvSnap.exists && tvSnap.data().currentCalled ? tvSnap.data().currentCalled : [];
-                    
-                    const newCalledSet = new Set([...currentCalled, reservationNumber]);
-                    const updatedCalledList = Array.from(newCalledSet); 
-
-                    t.set(tvRef, { 
-                        currentCalled: updatedCalledList, 
-                        updatedAt: now 
-                    }, { merge: true }); 
-                });
-            }
-        } else {
-             // 'seatEnter' や 'waiting' に変更された場合、TV表示リストから削除する必要がある
-             const reservationSnap = await docRef.get();
-             const reservationNumber = reservationSnap.exists ? reservationSnap.data().number : null;
-
-             if (reservationNumber) {
-                const tvRef = db.doc('tv/state');
-                
-                await db.runTransaction(async (t) => {
-                    const tvSnap = await t.get(tvRef);
-                    const currentCalled = tvSnap.exists && tvSnap.data().currentCalled ? tvSnap.data().currentCalled : [];
-                    
-                    // 削除対象番号を除外した新しいリストを作成
-                    const updatedCalledList = currentCalled.filter(n => n !== reservationNumber);
-
-                    t.set(tvRef, { 
-                        currentCalled: updatedCalledList, 
-                        updatedAt: now 
-                    }, { merge: true }); 
-                });
-             }
-        }
-        
-        res.json({ success: true, status: newStatus });
-
-    } catch (e) {
-        console.error("Error updating status:", e);
-        res.status(500).json({ error: "Failed to update reservation status" });
-    }
-});
-
-// ==========================================================
-// DELETE /api/reservations/:id (管理画面からの予約削除)
-// ==========================================================
-// :id は予約のドキュメントID
-app.delete('/api/reservations/:id', async (req, res) => {
-    
-    const reservationId = req.params.id;
-    const { apiSecret } = req.body; 
-
-    // 1. 認証チェック (DELETEリクエストでもbodyを使ってapiSecretをチェック)
-    if (apiSecret !== process.env.API_SECRET) {
-        return res.status(403).send('forbidden');
-    }
-
-    // 2. パラメータチェック
-    if (!reservationId) {
-        return res.status(400).send('Reservation ID is missing.');
-    }
-
-    try {
-        const docRef = db.collection('reservations').doc(reservationId);
-        
-        // 削除対象の番号を取得し、TV表示リストから削除する処理を行う
-        const snap = await docRef.get();
-        // ドキュメントが存在しない場合は何もしない
-        const reservationNumber = snap.exists ? snap.data().number : null;
-
-        await docRef.delete();
-
-        // 🚨 削除が成功した場合、TV表示のリストから該当番号を削除する処理を行う
-        if (reservationNumber) {
-            const tvRef = db.doc('tv/state');
-            const now = admin.firestore.FieldValue.serverTimestamp();
-            
-            await db.runTransaction(async (t) => {
-                const tvSnap = await t.get(tvRef);
-                const currentCalled = tvSnap.exists && tvSnap.data().currentCalled ? tvSnap.data().currentCalled : [];
-                
-                // 削除対象番号を除外した新しいリストを作成
-                const updatedCalledList = currentCalled.filter(n => n !== reservationNumber);
-
-                t.set(tvRef, { 
-                    currentCalled: updatedCalledList, 
-                    updatedAt: now 
-                }, { merge: true }); 
-            });
-        }
-
-        res.json({ success: true, message: `Reservation ${reservationId} deleted.` });
-
-    } catch (e) {
-        console.error("Error deleting reservation:", e);
-        res.status(500).json({ error: "Failed to delete reservation" });
     }
 });
 
