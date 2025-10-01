@@ -32,6 +32,41 @@ const getReservationStatus = (reservation) => {
     return statusText;
 };
 
+// 🚨 【追加】ソート順を定義するヘルパー関数 (②のプログラム)
+// 優先度が高いほど小さい番号を返す
+const getSortPriority = (reservation) => {
+    const statusText = getReservationStatus(reservation);
+
+    if (statusText === '呼び出し中') {
+        return 1; // 呼び出し中
+    }
+    if (statusText === '🚨 呼び出し期限切れ (10分経過)') {
+        return 2; // 呼び出し中（10分以上経過）
+    }
+    if (statusText === '待機中 (未呼出)') {
+        return 3; // 未呼び出し
+    }
+    // 受け取り済み、その他は最後に
+    return 4;
+};
+
+
+// 🚨 修正: reservations をソートする関数 (②のプログラム)
+const sortReservations = (resList) => {
+    return [...resList].sort((a, b) => {
+        // 1. ステータスによるソート (優先度 1 < 2 < 3 < 4)
+        const priorityA = getSortPriority(a);
+        const priorityB = getSortPriority(b);
+
+        if (priorityA !== priorityB) {
+            return priorityA - priorityB;
+        }
+
+        // 2. ステータスが同じ場合、番号 (number) が小さい順 (早く予約した順)
+        return a.number - b.number;
+    });
+};
+
 // 状態に応じて背景色を設定するヘルパー関数
 const getRowColor = (status) => {
     if (status.includes('期限切れ')) {
@@ -50,14 +85,22 @@ const getRowColor = (status) => {
 export default function Admin() {
     const [availableCount, setAvailableCount] = useState(1);
     const [callGroup, setCallGroup] = useState('5-5');
-    // 🚨 追加: 予約一覧の状態
+    // 🚨 追加: 予約一覧の状態 (既存)
     const [reservations, setReservations] = useState([]);
-    // 🚨 追加: ローディング状態
+    // 🚨 追加: ローディング状態 (既存)
     const [isLoading, setIsLoading] = useState(false);
-    // 🚨 追加: 最終更新時刻 (UIでリフレッシュ時刻を示すため)
+    // 🚨 追加: 最終更新時刻 (UIでリフレッシュ時刻を示すため) (既存)
     const [lastFetchTime, setLastFetchTime] = useState(null);
+    
+    // 🚨 【追加】apiSecretとmessageの状態 (①のプログラム)
+    const [apiSecret, setApiSecret] = useState('');
+    const [message, setMessage] = useState('');
+    
+    // 🚨 【追加】検索とフィルタリング用の状態 (①のプログラム)
+    const [searchTerm, setSearchTerm] = useState('');
+    const [showReceived, setShowReceived] = useState(false); // 受け取り済み（会計済み）を表示するかどうか
 
-    // 🚨 関数: 予約一覧を取得
+    // 🚨 関数: 予約一覧を取得 (既存)
     const fetchReservations = async () => {
         setIsLoading(true);
         try {
@@ -67,7 +110,7 @@ export default function Admin() {
             }
             const data = await response.json();
 
-            // createdAtでソート (サーバー側で降順に取得しているが、念のため)
+            // createdAtでソート (サーバー側で降順に取得しているが、念のため) (既存のソートを削除/変更しない)
             // Firebase Timestamp形式か、文字列/Dateオブジェクトを想定
             data.sort((a, b) => {
                 const timeA = a.createdAt?.seconds || new Date(a.createdAt).getTime();
@@ -86,7 +129,7 @@ export default function Admin() {
         }
     };
 
-    // 🚨 useEffect: ページ読み込み時と定期的な自動更新
+    // 🚨 useEffect: ページ読み込み時と定期的な自動更新 (既存)
     useEffect(() => {
         fetchReservations(); // 初回読み込み
 
@@ -128,7 +171,7 @@ export default function Admin() {
         }
     }
 
-    // 🚨 関数: 予約の状態を強制的に変更する（呼出 / 受取済）
+    // 🚨 関数: 予約の状態を強制的に変更する（呼出 / 受取済） (既存)
     const updateReservationStatus = async (id, newStatus) => {
         const newStatusText = newStatus === 'called' ? '呼び出し中' : '受取済み';
         if (!window.confirm(`番号 ${id} のステータスを「${newStatusText}」に変更しますか？`)) return;
@@ -158,7 +201,7 @@ export default function Admin() {
         }
     };
     
-    // 🚨 関数: 予約を削除する
+    // 🚨 関数: 予約を削除する (既存)
     const deleteReservation = async (id, number) => {
         if (!window.confirm(`番号 ${number} の予約を完全に削除しますか？`)) return;
 
@@ -185,6 +228,23 @@ export default function Admin() {
         }
     };
 
+    // 🚨 【追加】フィルタリング・ソートされたリストを計算 (③のプログラム)
+    const filteredAndSortedReservations = sortReservations(reservations)
+        // 1. 会計済み(seatEnter)フィルタリング
+        .filter(r => showReceived || r.status !== 'seatEnter')
+        // 2. 番号検索フィルタリング
+        .filter(r => 
+            searchTerm === '' || String(r.number).includes(searchTerm)
+        );
+    
+    // 🚨 【追加】注文内容を整形するヘルパー関数 (④のプログラムより抽出)
+    const formatOrder = (order) => {
+        if (!order || Object.keys(order).length === 0) return 'なし';
+        return Object.entries(order)
+            .filter(([, count]) => count > 0)
+            .map(([item, count]) => `${item}:${count}`)
+            .join(' / ');
+    };
 
     return (
         <div style={{ padding: '20px', maxWidth: '800px', margin: 'auto' }}>
@@ -232,7 +292,44 @@ export default function Admin() {
             
             {/* 予約一覧表 */}
             <hr />
-            <h2>予約一覧 ({reservations.length} 件)</h2>
+            <h2>予約一覧 ({filteredAndSortedReservations.length} 件 / 全{reservations.length}件)</h2> {/* 🚨 修正: 件数を filteredAndSortedReservations.length に変更し、全件数を追加 */}
+            
+            {/* 🚨 【追加】検索とフィルタリングUI (④のプログラム) */}
+            <div style={{ marginBottom: '20px', display: 'flex', gap: '20px', alignItems: 'center' }}>
+                {/* 番号検索入力欄 */}
+                <div style={{ flexGrow: 1 }}>
+                    <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>
+                        会計番号で検索:
+                    </label>
+                    <input
+                        type="text"
+                        placeholder="番号を入力..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px', width: '100%', maxWidth: '300px' }}
+                    />
+                </div>
+
+                {/* 会計済み表示トグルボタン */}
+                <div style={{ flexShrink: 0 }}>
+                    <button
+                        onClick={() => setShowReceived(prev => !prev)}
+                        style={{
+                            padding: '10px 15px',
+                            backgroundColor: showReceived ? '#007bff' : '#6c757d', // 青 (表示中) / 灰色 (非表示中)
+                            color: 'white',
+                            border: 'none',
+                            cursor: 'pointer',
+                            borderRadius: '4px',
+                            fontWeight: 'bold'
+                        }}
+                    >
+                        {showReceived ? '✅ 受け取り済みを表示中' : '❌ 受け取り済みを非表示中'}
+                    </button>
+                </div>
+            </div>
+            {/* 🚨 【追加終わり】 */}
+            
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', fontSize: '14px' }}>
                 <span>最終更新: {lastFetchTime ? lastFetchTime.toLocaleTimeString() : 'N/A'}</span>
                 <button 
@@ -245,22 +342,24 @@ export default function Admin() {
             </div>
 
             <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px', tableLayout: 'fixed' }}> {/* 🚨 修正: tableLayout: 'fixed' を追加 */}
                     <thead>
                         <tr style={{ backgroundColor: '#eee' }}>
-                            <th style={{ border: '1px solid #ccc', padding: '8px' }}>番号</th>
-                            <th style={{ border: '1px solid #ccc', padding: '8px' }}>団体</th>
-                            <th style={{ border: '1px solid #ccc', padding: '8px' }}>人数</th>
-                            <th style={{ border: '1px solid #ccc', padding: '8px' }}>名前</th>
-                            <th style={{ border: '1px solid #ccc', padding: '8px' }}>LINE</th>
+                            <th style={{ border: '1px solid #ccc', padding: '8px', width: '60px' }}>番号</th> {/* 🚨 修正: widthを追加 */}
+                            <th style={{ border: '1px solid #ccc', padding: '8px', width: '50px' }}>団体</th> {/* 🚨 修正: widthを追加 */}
+                            <th style={{ border: '1px solid #ccc', padding: '8px', width: '50px' }}>人数</th> {/* 🚨 修正: widthを変更 */}
+                            <th style={{ border: '1px solid #ccc', padding: '8px', width: '100px' }}>名前</th> {/* 🚨 修正: widthを変更 */}
+                            <th style={{ border: '1px solid #ccc', padding: '8px', minWidth: '180px' }}>注文内容 🚨</th> {/* 🚨 修正: 注文内容カラムを追加 (④のプログラム) */}
+                            <th style={{ border: '1px solid #ccc', padding: '8px', width: '50px' }}>LINE</th> {/* 🚨 修正: widthを追加 (元のコードのLINE) */}
                             <th style={{ border: '1px solid #ccc', padding: '8px', minWidth: '150px' }}>状態</th>
-                            <th style={{ border: '1px solid #ccc', padding: '8px' }}>登録時刻</th>
+                            <th style={{ border: '1px solid #ccc', padding: '8px', minWidth: '80px' }}>登録時刻</th> {/* 🚨 修正: widthを小さく (元のコードの登録時刻) */}
                             {/* 🚨 修正: 操作ボタンの列を追加 */}
                             <th style={{ border: '1px solid #ccc', padding: '8px', minWidth: '170px' }}>操作</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {reservations.map((res) => {
+                        {/* 🚨 修正: ループ対象を filteredAndSortedReservations に変更 */}
+                        {filteredAndSortedReservations.map((res) => {
                             const status = getReservationStatus(res);
                             const rowColor = getRowColor(status);
                             
@@ -276,6 +375,12 @@ export default function Admin() {
                                     <td style={{ border: '1px solid #ccc', padding: '8px' }}>{res.group}</td>
                                     <td style={{ border: '1px solid #ccc', padding: '8px' }}>{res.people}</td>
                                     <td style={{ border: '1px solid #ccc', padding: '8px' }}>{res.name}</td>
+                                    
+                                    {/* 🚨 【追加】注文内容のセル (④のプログラム) */}
+                                    <td style={{ border: '1px solid #ccc', padding: '8px', fontSize: '12px', whiteSpace: 'normal' }}>
+                                        {formatOrder(res.order)}
+                                    </td>
+                                    
                                     <td style={{ border: '1px solid #ccc', padding: '8px', textAlign: 'center' }}>{res.wantsLine ? (res.lineUserId ? '✅' : '待機') : '❌'}</td>
                                     <td style={{ border: '1px solid #ccc', padding: '8px', fontWeight: 'bold' }}>{status}</td>
                                     <td style={{ border: '1px solid #ccc', padding: '8px' }}>{formattedTime}</td>
@@ -339,7 +444,8 @@ export default function Admin() {
                 </table>
             </div>
             
-            {reservations.length === 0 && !isLoading && <p style={{ textAlign: 'center', marginTop: '20px' }}>予約はありません。</p>}
+            {/* 🚨 修正: 条件を filteredAndSortedReservations.length === 0 に変更 */}
+            {filteredAndSortedReservations.length === 0 && !isLoading && <p style={{ textAlign: 'center', marginTop: '20px' }}>予約はありません。</p>}
             
             <hr style={{ marginTop: '20px' }}/>
             <div style={{ fontSize: '12px', padding: '10px', backgroundColor: '#eee', borderRadius: '4px' }}>
