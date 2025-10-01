@@ -75,8 +75,7 @@ async function sendLineReply(replyToken, messageText) {
 }
 
 // ==========================================================
-// 🚨 修正2: LINE Webhookイベントを非同期で処理する関数
-// (res.sendStatus(200)の後に呼び出される)
+// LINE Webhookイベントを非同期で処理する関数
 // ==========================================================
 async function processLineWebhookEvents(events, db) {
     const admin = require('firebase-admin'); // 関数内で使うため再取得
@@ -179,10 +178,9 @@ async function processLineWebhookEvents(events, db) {
 }
 
 // ==========================================================
-// POST /api/reserve: 予約登録 (変更なし)
+// POST /api/reserve: 予約登録
 // ==========================================================
 app.post('/api/reserve', async (req, res) => {
-    // ... 既存のロジック (変更なし)
     const userData = req.body;
     if (!userData.name || !userData.people || userData.people <= 0 || !userData.group) { 
         return res.status(400).send('Invalid reservation data (name, people, or group missing).');
@@ -230,7 +228,7 @@ app.post('/api/reserve', async (req, res) => {
 
 
 // ==========================================================
-// 🚨 修正3: POST /api/line-webhook: LINEからのイベント処理 (即時応答を確保)
+// POST /api/line-webhook: LINEからのイベント処理 (即時応答を確保)
 // ==========================================================
 app.post('/api/line-webhook', async (req, res) => {
 
@@ -259,10 +257,9 @@ app.post('/api/line-webhook', async (req, res) => {
 
 
 // ==========================================================
-// POST /api/compute-call (変更なし)
+// POST /api/compute-call (呼び出し計算とTV表示更新)
 // ==========================================================
 app.post('/api/compute-call', async (req, res) => {
-    // ... 既存のロジック (変更なし)
     try {
         if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden');
         
@@ -307,8 +304,8 @@ app.post('/api/compute-call', async (req, res) => {
         
         const tvSnap = await tvRef.get(); 
         const currentCalled = tvSnap.exists && tvSnap.data().currentCalled
-                                 ? tvSnap.data().currentCalled
-                                 : [];
+                             ? tvSnap.data().currentCalled
+                             : [];
         
         selected.forEach(item => {
             const reservationNumber = item.data.number !== undefined ? item.data.number : '99-99'; 
@@ -328,18 +325,23 @@ app.post('/api/compute-call', async (req, res) => {
             }
         });
 
+        // 1. 既存のリストと新しく呼び出す番号を結合し、重複を排除
         const newCalledSet = new Set([...currentCalled, ...calledNumbers]);
         let updatedCalledList = Array.from(newCalledSet); 
 
-        // TV表示リストの更新 (10件制限を設ける場合はここでスライス)
-        // if (updatedCalledList.length > 10) { updatedCalledList = updatedCalledList.slice(-10); }
+        // 2. 🚨 修正2: Firestoreのinクエリの制限（最大10個）を回避するため、リストを最大10個に制限する
+        // 最新の10個のみを保持するために、配列の末尾10要素をスライスします。
+        if (updatedCalledList.length > 10) { 
+            updatedCalledList = updatedCalledList.slice(-10); 
+        }
 
-
+        // 3. TV表示用のドキュメントを更新
         batch.set(tvRef, { 
             currentCalled: updatedCalledList, 
             updatedAt: now 
         }, { merge: true }); 
 
+        // 4. トランザクションをコミット
         await batch.commit();
 
         await db.collection('logs').add({
@@ -361,10 +363,9 @@ app.post('/api/compute-call', async (req, res) => {
 
 
 // ==========================================================
-// GET /api/waiting-summary (変更なし)
+// GET /api/waiting-summary
 // ==========================================================
 app.get('/api/waiting-summary', async (req, res) => {
-    // ... 既存のロジック (変更なし)
     try {
         const waitingSnap = await db.collection('reservations')
             .where('status', '==', 'waiting')
@@ -396,10 +397,9 @@ app.get('/api/waiting-summary', async (req, res) => {
 
 
 // ==========================================================
-// GET /api/tv-status (変更なし)
+// GET /api/tv-status
 // ==========================================================
 app.get('/api/tv-status', async (req, res) => {
-    // ... 既存のロジック (変更なし)
     try {
         const doc = await db.doc('tv/state').get();
         if (!doc.exists) {
@@ -413,9 +413,16 @@ app.get('/api/tv-status', async (req, res) => {
             return res.json({ currentCalled: [], updatedAt: data.updatedAt });
         }
 
+        // Firestoreのin句制限を回避するため、クエリに渡すリストを最大10個にスライス
+        let numbersToQuery = data.currentCalled;
+        if (numbersToQuery.length > 10) {
+            numbersToQuery = numbersToQuery.slice(-10);
+        }
+
+        // numbersToQueryを使用
         const calledReservationSnap = await db.collection('reservations')
             .where('status', 'in', ['called', 'seatEnter']) 
-            .where('number', 'in', data.currentCalled) 
+            .where('number', 'in', numbersToQuery) 
             .get();
             
         const stillCalledNumbers = [];
@@ -427,6 +434,7 @@ app.get('/api/tv-status', async (req, res) => {
 
             const calledAt = rData.calledAt.toDate(); 
             
+            // 呼び出し時刻から10分以内なら表示を継続
             if (now.getTime() - calledAt.getTime() < TEN_MINUTES_MS) {
                 stillCalledNumbers.push(rData.number);
             }
@@ -441,10 +449,9 @@ app.get('/api/tv-status', async (req, res) => {
 });
 
 // ==========================================================
-// GET /api/reservations (管理画面用ルート - 変更なし)
+// GET /api/reservations (管理画面用ルート)
 // ==========================================================
 app.get('/api/reservations', async (req, res) => {
-    // ... 既存のロジック (変更なし)
     try {
         const snap = await db.collection('reservations')
             .orderBy('createdAt', 'desc')
@@ -464,7 +471,7 @@ app.get('/api/reservations', async (req, res) => {
 });
 
 // ==========================================================
-// 🚨 PUT /api/reservations/:id (管理画面からのステータス更新 - 追加)
+// PUT /api/reservations/:id (管理画面からのステータス更新)
 // ==========================================================
 app.put('/api/reservations/:id', async (req, res) => {
     try {
@@ -503,7 +510,7 @@ app.put('/api/reservations/:id', async (req, res) => {
 });
 
 // ==========================================================
-// 🚨 DELETE /api/reservations/:id (管理画面からの削除 - 追加)
+// DELETE /api/reservations/:id (管理画面からの削除)
 // ==========================================================
 app.delete('/api/reservations/:id', async (req, res) => {
     try {
