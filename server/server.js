@@ -30,6 +30,8 @@ try {
 
 const db = admin.firestore();
 const COUNTER_DOC = 'settings/counters';
+// 🚨 【追加】在庫制限を保存するドキュメント
+const STOCK_DOC = 'settings/stockLimits';
 
 // ==========================================================
 // LINE Push/Reply Utility (エラーログ強化版)
@@ -86,6 +88,49 @@ async function sendLineReply(replyToken, messageText) {
         console.error('LINE reply failed:', res.status, errorText);
     }
 }
+
+// ==========================================================
+// 🚨 【追加】GET /api/order-summary
+// 現在の全注文の合計数と在庫制限を返すAPI
+// ==========================================================
+app.get('/api/order-summary', async (req, res) => {
+    try {
+        // 1. 全ての予約を取得 (status='seatEnter'は集計対象外とする)
+        const reservationsSnapshot = await db.collection('reservations')
+            .where('status', '!=', 'seatEnter') // 受け取り済みの注文は集計対象外
+            .where('status', '!=', 'cancel') // キャンセルも集計対象外
+            .get();
+
+        const currentOrders = {}; // { 'pork_bun': 5, 'pizza_bun': 10, ... }
+
+        reservationsSnapshot.forEach(doc => {
+            const reservation = doc.data();
+            const order = reservation.order || {};
+            
+            // 予約ごとの注文を合計に追加
+            Object.entries(order).forEach(([itemKey, count]) => {
+                // countが数値で0より大きいことを確認
+                if (typeof count === 'number' && count > 0) {
+                    currentOrders[itemKey] = (currentOrders[itemKey] || 0) + count;
+                }
+            });
+        });
+
+        // 2. 在庫制限データを取得
+        const stockDoc = await db.collection('settings').doc('stockLimits').get();
+        // 在庫制限がない場合は、初期値として空のオブジェクトを返す
+        const stockLimits = stockDoc.exists ? stockDoc.data() : {};
+
+        res.json({
+            currentOrders: currentOrders,
+            stockLimits: stockLimits
+        });
+
+    } catch (e) {
+        console.error('Error fetching order summary:', e);
+        res.status(500).send("Order summary fetch failed.");
+    }
+});
 
 // ==========================================================
 // LINE Webhookイベントを非同期で処理する関数
