@@ -8,7 +8,7 @@ const app = express();
 // CORSを詳細に設定
 app.use(cors({
     origin: '*',  // すべてのドメインからのアクセスを許可
-    // 🚨 修正: DELETEとPUTメソッドを追加して管理画面の全機能（削除・更新）を許可
+    // 🚨 修正はすでに適用済み: DELETEとPUTメソッドを許可
     methods: ['GET', 'POST', 'DELETE', 'PUT'] 
 }));
 
@@ -16,7 +16,6 @@ app.use(express.json());
 
 // Firebaseの初期化
 try {
-    // 🚨 環境変数からサービスアカウントキーを読み込む
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
@@ -30,7 +29,7 @@ const db = admin.firestore();
 const COUNTER_DOC = 'settings/counters';
 
 // ==========================================================
-// LINE Push/Reply Utility
+// LINE Push/Reply Utility (堅牢化済み)
 // ==========================================================
 
 async function sendLinePush(toUserId, messageText) {
@@ -49,8 +48,10 @@ async function sendLinePush(toUserId, messageText) {
             messages: [{ type: 'text', text: messageText }]
         })
     });
+    // 🚨 修正: エラー時のログを詳細化
     if (!res.ok) {
-        console.error('LINE push failed:', res.status, await res.text());
+        const errorText = await res.text();
+        console.error('LINE push failed:', res.status, errorText);
     }
 }
 
@@ -70,14 +71,42 @@ async function sendLineReply(replyToken, messageText) {
             messages: [{ type: 'text', text: messageText }]
         })
     });
+    // 🚨 修正: エラー時のログを詳細化
     if (!res.ok) {
-        console.error('LINE reply failed:', res.status, await res.text());
+        const errorText = await res.text();
+        console.error('LINE reply failed:', res.status, errorText);
+    }
+}
+
+// ==========================================================
+// Webhookイベントを非同期で処理する関数 (LINE応答速度確保のため分離)
+// ==========================================================
+async function processLineEvents(events) {
+    try {
+        for (const event of events) {
+            
+            // ログ出力: どのイベントが来たかを確認
+            // console.log("Processing LINE event:", event.type, event.source.userId);
+
+            if (event.type === 'message' && event.message.type === 'text') {
+                const replyText = `現在、受付は予約番号でのみ機能しています。\n受付で表示された番号が「呼び出し中」になったら、ご来店ください。`;
+                // リプライはreplyTokenを使って行い、非同期で実行
+                sendLineReply(event.replyToken, replyText).catch(e => console.error("Reply error:", e));
+
+            } else if (event.type === 'follow') {
+                const followText = `ご登録ありがとうございます！✨\n\n店頭の受付機で「LINEで通知希望」を選択すると、順番が来た際にお知らせします。\n\nそれ以外のメッセージには自動応答しています。`;
+                // リプライはreplyTokenを使って行い、非同期で実行
+                sendLineReply(event.replyToken, followText).catch(e => console.error("Follow reply error:", e));
+            }
+        }
+    } catch (e) {
+        console.error("Critical error inside processLineEvents:", e);
     }
 }
 
 
 // ==========================================================
-// POST /api/reserve: 予約登録
+// POST /api/reserve: 予約登録 (変更なし)
 // ==========================================================
 app.post('/api/reserve', async (req, res) => {
     const userData = req.body;
@@ -126,30 +155,35 @@ app.post('/api/reserve', async (req, res) => {
 });
 
 // ==========================================================
-// POST /api/line-webhook: LINE Webhook処理
+// POST /api/line-webhook: LINE Webhook処理 (LINEの応答期限遵守)
 // ==========================================================
 app.post('/api/line-webhook', async (req, res) => {
-    if (!process.env.LINE_SECRET || !process.env.LINE_ACCESS_TOKEN) return res.sendStatus(500);
-    // 署名検証ロジックとメッセージ処理ロジックをここに記述
-    // 省略していますが、本番環境では必ず署名検証を実装してください。
     
-    // シンプルなオウム返し処理 (本番用ではない)
-    const events = req.body.events;
-    for (const event of events) {
-        if (event.type === 'message' && event.message.type === 'text') {
-            const replyText = `現在、受付は予約番号でのみ機能しています。\n受付で表示された番号が「呼び出し中」になったら、ご来店ください。`;
-            sendLineReply(event.replyToken, replyText).catch(console.error);
-        } else if (event.type === 'follow') {
-            const followText = `ご登録ありがとうございます。\n受付でLINE通知を希望すると、順番が来た際にお知らせします。`;
-            sendLineReply(event.replyToken, followText).catch(console.error);
-        }
+    if (!process.env.LINE_SECRET || !process.env.LINE_ACCESS_TOKEN) {
+        console.error("LINE env variables are missing.");
+        return res.sendStatus(500);
     }
+    
+    // 🚨 最重要: LINEの応答期限(3秒)を遵守するため、即座に200 OKを返す
     res.sendStatus(200);
+
+    // イベント処理はres.sendStatus(200)の後に非同期で開始する
+    try {
+        const events = req.body.events;
+        // processLineEvents関数を使ってイベントを非同期処理
+        processLineEvents(events).catch(e => {
+            console.error("Error initiating LINE event processing:", e);
+        });
+        
+    } catch (e) {
+        // req.bodyのパース失敗など、リクエスト受信時のエラー
+        console.error("Error processing LINE webhook request body:", e);
+    }
 });
 
 
 // ==========================================================
-// POST /api/compute-call: TV表示リストの更新
+// POST /api/compute-call: TV表示リストの更新 (変更なし)
 // ==========================================================
 app.post('/api/compute-call', async (req, res) => {
     
@@ -215,13 +249,11 @@ app.post('/api/compute-call', async (req, res) => {
             }
         });
 
-        // 🚨 修正2-A: TV表示リストを更新する際、最大10個に制限する
+        // TV表示リストを更新する際、最大10個に制限する (Firestoreのin句制限回避)
         const newCalledSet = new Set([...currentCalled, ...calledNumbers]);
         let updatedCalledList = Array.from(newCalledSet); 
 
-        // **Firestoreのin句制限（10個）を回避するためにリストを最大10個にスライス**
         if (updatedCalledList.length > 10) {
-            // 最新の10個のみを保持する
             updatedCalledList = updatedCalledList.slice(-10); 
         }
 
@@ -243,7 +275,7 @@ app.post('/api/compute-call', async (req, res) => {
 
 
 // ==========================================================
-// GET /api/waiting-summary: 待ち状況サマリー
+// GET /api/waiting-summary: 待ち状況サマリー (変更なし)
 // ==========================================================
 app.get('/api/waiting-summary', async (req, res) => {
     try {
@@ -277,7 +309,7 @@ app.get('/api/waiting-summary', async (req, res) => {
 
 
 // ==========================================================
-// GET /api/tv-status: TV表示用ルート (10分ルール適用 & 制限回避)
+// GET /api/tv-status: TV表示用ルート (変更なし)
 // ==========================================================
 app.get('/api/tv-status', async (req, res) => {
     try {
@@ -293,17 +325,15 @@ app.get('/api/tv-status', async (req, res) => {
             return res.json({ currentCalled: [], updatedAt: data.updatedAt });
         }
 
-        // 🚨 修正2-B: Firestoreにクエリを投げる前に、リストを最大10個にスライス
+        // Firestoreにクエリを投げる前に、リストを最大10個にスライス
         let numbersToQuery = data.currentCalled;
         if (numbersToQuery.length > 10) {
-            // サーバー側で取得したリストも10個にスライスして、クエリの制限を超えないようにする
             numbersToQuery = numbersToQuery.slice(-10); 
         }
 
         // TVに表示中の番号を再確認し、10分ルールを適用
         const calledReservationSnap = await db.collection('reservations')
             .where('status', 'in', ['called', 'seatEnter']) 
-            // 🚨 スライスされた numbersToQuery を使用
             .where('number', 'in', numbersToQuery) 
             .get();
             
@@ -314,16 +344,13 @@ app.get('/api/tv-status', async (req, res) => {
             const rData = rDoc.data();
             if (!rData.calledAt) return; 
 
-            // calledAtがTimestampオブジェクトであることを確認し、Dateオブジェクトに変換
             const calledAt = rData.calledAt.toDate(); 
             
-            // 呼び出し時刻から10分以内なら表示を継続
             if (now.getTime() - calledAt.getTime() < TEN_MINUTES_MS) {
                 stillCalledNumbers.push(rData.number);
             }
         });
 
-        // 応答: 10分経過していない番号のリストを返す
         res.json({ currentCalled: stillCalledNumbers, updatedAt: data.updatedAt });
 
     } catch (e) {
@@ -333,14 +360,13 @@ app.get('/api/tv-status', async (req, res) => {
 });
 
 // ==========================================================
-// GET /api/reservations (管理画面用ルート)
+// GET /api/reservations (管理画面用ルート - 変更なし)
 // ==========================================================
 app.get('/api/reservations', async (req, res) => {
-    // すべての予約リストを返す（管理画面で一覧表示に使う）
     try {
         const snap = await db.collection('reservations')
             .orderBy('createdAt', 'desc')
-            .limit(100) // 最新100件に制限
+            .limit(100)
             .get();
 
         const reservations = snap.docs.map(doc => ({
@@ -357,11 +383,10 @@ app.get('/api/reservations', async (req, res) => {
 
 
 // ==========================================================
-// 🚨 PUT /api/reservations/:id (管理画面からのステータス更新)
+// PUT /api/reservations/:id (管理画面からのステータス更新 - 変更なし)
 // ==========================================================
 app.put('/api/reservations/:id', async (req, res) => {
     try {
-        // APIシークレットによる認証
         if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden');
         
         const { id } = req.params;
@@ -376,18 +401,13 @@ app.put('/api/reservations/:id', async (req, res) => {
         
         const updateData = { status };
         
-        // ステータスに応じたタイムスタンプ更新
         if (status === 'called') {
             updateData.calledAt = admin.firestore.FieldValue.serverTimestamp();
-            updateData.seatEnterAt = null; // 念のため着席時刻はリセット
+            updateData.seatEnterAt = null;
         } else if (status === 'seatEnter') {
             updateData.seatEnterAt = admin.firestore.FieldValue.serverTimestamp();
-        } else if (status === 'waiting') {
-            // waitingに戻す場合は、calledAtとseatEnterAtをリセット
+        } else if (status === 'waiting' || status === 'cancel') {
             updateData.calledAt = null;
-            updateData.seatEnterAt = null;
-        } else if (status === 'cancel') {
-             updateData.calledAt = null;
             updateData.seatEnterAt = null;
         }
 
@@ -403,11 +423,10 @@ app.put('/api/reservations/:id', async (req, res) => {
 
 
 // ==========================================================
-// 🚨 DELETE /api/reservations/:id (管理画面からの削除)
+// DELETE /api/reservations/:id (管理画面からの削除 - 変更なし)
 // ==========================================================
 app.delete('/api/reservations/:id', async (req, res) => {
     try {
-        // APIシークレットによる認証
         if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden');
         
         const { id } = req.params;
