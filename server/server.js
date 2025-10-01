@@ -8,7 +8,7 @@ const app = express();
 // CORSを詳細に設定
 app.use(cors({
     origin: '*',  // すべてのドメインからのアクセスを許可
-    // 🚨 修正1: DELETEとPUTメソッドを追加してCORSエラーと404エラーを解消
+    // 🚨 修正: DELETEとPUTメソッドを追加して管理画面の全機能（削除・更新）を許可
     methods: ['GET', 'POST', 'DELETE', 'PUT'] 
 }));
 
@@ -30,7 +30,7 @@ const db = admin.firestore();
 const COUNTER_DOC = 'settings/counters';
 
 // ==========================================================
-// LINE Push/Reply Utility (実装は省略)
+// LINE Push/Reply Utility
 // ==========================================================
 
 async function sendLinePush(toUserId, messageText) {
@@ -55,7 +55,10 @@ async function sendLinePush(toUserId, messageText) {
 }
 
 async function sendLineReply(replyToken, messageText) {
-    if (!process.env.LINE_ACCESS_TOKEN) return;
+    if (!process.env.LINE_ACCESS_TOKEN) {
+        console.error("LINE_ACCESS_TOKEN is not set.");
+        return;
+    }
     const res = await fetch('https://api.line.me/v2/bot/message/reply', {
         method: 'POST',
         headers: {
@@ -72,8 +75,9 @@ async function sendLineReply(replyToken, messageText) {
     }
 }
 
+
 // ==========================================================
-// POST /api/reserve: 予約登録 (実装は省略せず残す)
+// POST /api/reserve: 予約登録
 // ==========================================================
 app.post('/api/reserve', async (req, res) => {
     const userData = req.body;
@@ -122,16 +126,30 @@ app.post('/api/reserve', async (req, res) => {
 });
 
 // ==========================================================
-// POST /api/line-webhook (実装は省略)
+// POST /api/line-webhook: LINE Webhook処理
 // ==========================================================
 app.post('/api/line-webhook', async (req, res) => {
-    // ... (関数本体は省略)
+    if (!process.env.LINE_SECRET || !process.env.LINE_ACCESS_TOKEN) return res.sendStatus(500);
+    // 署名検証ロジックとメッセージ処理ロジックをここに記述
+    // 省略していますが、本番環境では必ず署名検証を実装してください。
+    
+    // シンプルなオウム返し処理 (本番用ではない)
+    const events = req.body.events;
+    for (const event of events) {
+        if (event.type === 'message' && event.message.type === 'text') {
+            const replyText = `現在、受付は予約番号でのみ機能しています。\n受付で表示された番号が「呼び出し中」になったら、ご来店ください。`;
+            sendLineReply(event.replyToken, replyText).catch(console.error);
+        } else if (event.type === 'follow') {
+            const followText = `ご登録ありがとうございます。\n受付でLINE通知を希望すると、順番が来た際にお知らせします。`;
+            sendLineReply(event.replyToken, followText).catch(console.error);
+        }
+    }
     res.sendStatus(200);
 });
 
 
 // ==========================================================
-// POST /api/compute-call (TV表示リストの更新 & Firestore制限回避)
+// POST /api/compute-call: TV表示リストの更新
 // ==========================================================
 app.post('/api/compute-call', async (req, res) => {
     
@@ -141,8 +159,7 @@ app.post('/api/compute-call', async (req, res) => {
         const availablePeople = parseInt(req.body.availableCount, 10); 
         const callGroup = req.body.callGroup; 
         
-        // ... (バリデーション、予約選択処理は省略)
-        
+        // 予約選択処理
         let waitingQuery = db.collection('reservations')
           .where('status', '==', 'waiting')
           .where('group', '==', callGroup)
@@ -153,7 +170,6 @@ app.post('/api/compute-call', async (req, res) => {
         let totalNeeded = 0;
         const selected = [];
         
-        // 待ち人数ベースで、空き人数を超えない範囲で予約を選択
         waitingSnap.forEach(doc => {
           if (totalNeeded >= availablePeople) return; 
           const d = doc.data();
@@ -203,9 +219,9 @@ app.post('/api/compute-call', async (req, res) => {
         const newCalledSet = new Set([...currentCalled, ...calledNumbers]);
         let updatedCalledList = Array.from(newCalledSet); 
 
-        // **ここでFirestoreのin句制限を回避するためにリストを最大10個にスライス**
+        // **Firestoreのin句制限（10個）を回避するためにリストを最大10個にスライス**
         if (updatedCalledList.length > 10) {
-            // 例: 最新の10個のみを保持する
+            // 最新の10個のみを保持する
             updatedCalledList = updatedCalledList.slice(-10); 
         }
 
@@ -217,8 +233,6 @@ app.post('/api/compute-call', async (req, res) => {
 
         await batch.commit();
 
-        // ... (ログ記録は省略)
-
         res.json({ success: true, called: calledNumbers, totalNeeded });
 
     } catch (e) {
@@ -229,10 +243,9 @@ app.post('/api/compute-call', async (req, res) => {
 
 
 // ==========================================================
-// GET /api/waiting-summary (待ち状況サマリー)
+// GET /api/waiting-summary: 待ち状況サマリー
 // ==========================================================
 app.get('/api/waiting-summary', async (req, res) => {
-    // ... (関数本体は省略)
     try {
         const waitingSnap = await db.collection('reservations')
             .where('status', '==', 'waiting')
@@ -264,7 +277,7 @@ app.get('/api/waiting-summary', async (req, res) => {
 
 
 // ==========================================================
-// GET /api/tv-status (TV表示用ルート - 10分ルールを適用 & Firestore制限回避)
+// GET /api/tv-status: TV表示用ルート (10分ルール適用 & 制限回避)
 // ==========================================================
 app.get('/api/tv-status', async (req, res) => {
     try {
@@ -301,6 +314,7 @@ app.get('/api/tv-status', async (req, res) => {
             const rData = rDoc.data();
             if (!rData.calledAt) return; 
 
+            // calledAtがTimestampオブジェクトであることを確認し、Dateオブジェクトに変換
             const calledAt = rData.calledAt.toDate(); 
             
             // 呼び出し時刻から10分以内なら表示を継続
@@ -314,7 +328,6 @@ app.get('/api/tv-status', async (req, res) => {
 
     } catch (e) {
         console.error("Error fetching tv status:", e);
-        // エラーが発生しても空配列を返すことで、フロントエンドのTypeErrorを防ぐ
         res.status(500).json({ error: "Failed to fetch status" });
     }
 });
@@ -323,10 +336,11 @@ app.get('/api/tv-status', async (req, res) => {
 // GET /api/reservations (管理画面用ルート)
 // ==========================================================
 app.get('/api/reservations', async (req, res) => {
+    // すべての予約リストを返す（管理画面で一覧表示に使う）
     try {
         const snap = await db.collection('reservations')
             .orderBy('createdAt', 'desc')
-            .limit(100)
+            .limit(100) // 最新100件に制限
             .get();
 
         const reservations = snap.docs.map(doc => ({
@@ -362,12 +376,18 @@ app.put('/api/reservations/:id', async (req, res) => {
         
         const updateData = { status };
         
+        // ステータスに応じたタイムスタンプ更新
         if (status === 'called') {
             updateData.calledAt = admin.firestore.FieldValue.serverTimestamp();
+            updateData.seatEnterAt = null; // 念のため着席時刻はリセット
         } else if (status === 'seatEnter') {
             updateData.seatEnterAt = admin.firestore.FieldValue.serverTimestamp();
         } else if (status === 'waiting') {
+            // waitingに戻す場合は、calledAtとseatEnterAtをリセット
             updateData.calledAt = null;
+            updateData.seatEnterAt = null;
+        } else if (status === 'cancel') {
+             updateData.calledAt = null;
             updateData.seatEnterAt = null;
         }
 
@@ -407,4 +427,4 @@ app.delete('/api/reservations/:id', async (req, res) => {
 
 // サーバーの待ち受け開始
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=> console.log('Server on', PORT));
+app.listen(PORT, ()=> console.log(`Server is running on port ${PORT}`));
