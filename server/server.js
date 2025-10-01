@@ -7,7 +7,7 @@ const app = express();
 
 // CORSを詳細に設定
 app.use(cors({
-    origin: '*',  // すべてのドメインからのアクセスを許可
+    origin: '*',  // すべてのメインからのアクセスを許可
     // 🚨 修正1: DELETEとPUTメソッドを追加して管理画面の全機能（削除・更新）を許可
     methods: ['GET', 'POST', 'DELETE', 'PUT'] 
 }));
