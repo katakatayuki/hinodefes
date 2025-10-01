@@ -80,6 +80,7 @@ app.get('/api/order-summary', async (req, res) => {
         // 1. 在庫制限の取得 (手動で投入された設定データ)
         const stockDocRef = db.doc(STOCK_DOC);
         const stockDoc = await stockDocRef.get();
+        // 🚨 修正: 取得できない場合は空のオブジェクトを返す (既に修正済み)
         const stockLimits = stockDoc.exists ? stockDoc.data() : {};
 
         // 2. 現在の注文の集計
@@ -97,6 +98,7 @@ app.get('/api/order-summary', async (req, res) => {
             for (const itemCode in reservation.order) {
                 const quantity = reservation.order[itemCode];
                 if (typeof quantity === 'number' && quantity > 0) {
+                    // 🚨 修正: itemCodeが存在するかチェックしてから加算
                     currentOrders[itemCode] = (currentOrders[itemCode] || 0) + quantity;
                 }
             }
@@ -268,7 +270,7 @@ app.get('/api/tv-status', async (req, res) => {
         const tenMinutesAgo = new Date(now.toDate().getTime() - TEN_MINUTES_MS);
 
         // 呼び出し中 ('called') の予約を取得
-        // 🚨 修正済み: where句のみを使用し、複合インデックスのエラーを回避
+        // 🚨 where句のみを使用し、複合インデックスのエラーを回避
         const calledSnapshot = await db.collection('reservations')
             .where('status', '==', 'called')
             .get(); 
