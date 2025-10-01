@@ -107,6 +107,7 @@ app.post('/api/reservation', async (req, res) => {
             const totalOrder = Object.values(order).reduce((sum, count) => sum + count, 0);
             if (totalOrder > 0) {
                  // 在庫制限を取得
+                // 🚨 【修正ポイント１】トランザクション内のdb.collection('settings').doc('stockLimits')をt.get()で実行する
                 const stockDoc = await t.get(db.collection('settings').doc('stockLimits'));
                 const stockLimits = stockDoc.exists ? stockDoc.data() : {};
                 
@@ -178,15 +179,15 @@ app.post('/api/reservation', async (req, res) => {
 // ==========================================================
 app.get('/api/reservations', async (req, res) => {
     try {
-        // 認証チェックをスキップ (テストのため)
-        // const authHeader = req.headers.authorization;
-        // if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        //     return res.status(403).send('Forbidden: Authorization header missing or malformed.');
-        // }
-        // const apiSecret = authHeader.split(' ')[1];
-        // if (apiSecret !== process.env.REACT_APP_API_SECRET && apiSecret !== process.env.API_SECRET) {
-        //     return res.status(403).send('Forbidden: Invalid API Secret.');
-        // }
+        // 認証チェックをスキップ (テストのため)
+        // const authHeader = req.headers.authorization;
+        // if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        //     return res.status(403).send('Forbidden: Authorization header missing or malformed.');
+        // }
+        // const apiSecret = authHeader.split(' ')[1];
+        // if (apiSecret !== process.env.REACT_APP_API_SECRET && apiSecret !== process.env.API_SECRET) {
+        //     return res.status(403).send('Forbidden: Invalid API Secret.');
+        // }
 
 
         // 全予約を番号 (number) 順に取得
@@ -269,10 +270,10 @@ app.get('/api/stock-limits', async (req, res) => {
 
 
 // ==========================================================
-// POST /api/call-next (次の人を呼び出し)
+// POST /api/compute-call (次の人を呼び出し)
+// 🚨 【修正ポイント２】Admin.jsで呼び出されているエンドポイント名(/api/compute-call)に修正
 // ==========================================================
-// 🚨 【追加】LINE送信処理を追加
-app.post('/api/call-next', async (req, res) => {
+app.post('/api/compute-call', async (req, res) => {
     try {
         // if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('Forbidden'); // 🚨 テストのため無効化
 
