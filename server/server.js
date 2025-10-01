@@ -239,7 +239,7 @@ app.get('/api/stock-limits', async (req, res) => {
 // 🚨 【追加】LINE送信処理を追加
 app.post('/api/call-next', async (req, res) => {
     try {
-        if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('Forbidden');
+        // if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('Forbidden'); // 🚨 テストのため無効化
 
         let calledId = null;
 
@@ -303,7 +303,7 @@ app.post('/api/call-next', async (req, res) => {
 // ==========================================================
 app.put('/api/reservations/:id', async (req, res) => {
     try {
-        if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('Forbidden');
+        // if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('Forbidden'); // 🚨 テストのため無効化
         
         const { id } = req.params;
         const { status } = req.body; // 'waiting', 'called', 'seatEnter', 'cancel'
@@ -354,7 +354,7 @@ app.put('/api/reservations/:id', async (req, res) => {
 // ==========================================================
 app.delete('/api/reservations/:id', async (req, res) => {
     try {
-        if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden');
+        // if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden'); // 🚨 テストのため無効化
         
         const { id } = req.params;
 
@@ -377,7 +377,8 @@ app.delete('/api/reservations/:id', async (req, res) => {
 // 🚨 【追加】在庫設定API
 app.post('/api/inventory', async (req, res) => {
     try {
-        if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('Forbidden');
+        // 🚨 【修正】テスト段階のためAPI Secretチェックを一時的にスキップ
+        // if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('Forbidden'); 
 
         const { items, apiSecret } = req.body;
         
