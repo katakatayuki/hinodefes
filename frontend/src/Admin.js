@@ -104,9 +104,16 @@ export default function Admin() {
     const fetchReservations = async () => {
         setIsLoading(true);
         try {
-            const response = await fetch(`${API_BASE_URL}/api/reservations`);
+            // 🚨 修正: 予約一覧取得時にも Authorization ヘッダーを付けて認証情報を渡す
+            const response = await fetch(`${API_BASE_URL}/api/reservations`, {
+                headers: {
+                    'Authorization': `Bearer ${process.env.REACT_APP_API_SECRET}` // API Secretをヘッダーに設定
+                }
+            });
+
             if (!response.ok) {
-                throw new Error(`予約一覧の取得に失敗しました: ${response.status}`);
+                // サーバー側で認証が失敗した場合、ステータスは403になる
+                throw new Error(`予約一覧の取得に失敗しました: ${response.status} ${response.statusText || ''}`);
             }
             const data = await response.json();
 
@@ -123,7 +130,12 @@ export default function Admin() {
 
         } catch (error) {
             console.error('予約一覧取得エラー:', error);
-            alert('予約一覧の取得中にエラーが発生しました。コンソールを確認してください。');
+            // 403エラーの場合、認証設定を確認するよう促すメッセージを追加
+            if (error.message.includes('403')) {
+                alert('予約一覧の取得中にエラーが発生しました。認証エラー (403 Forbidden) の可能性があります。サーバー側のAPI Secret設定と認証ロジックを確認してください。');
+            } else {
+                alert('予約一覧の取得中にエラーが発生しました。コンソールを確認してください。');
+            }
         } finally {
             setIsLoading(false);
         }
@@ -173,6 +185,7 @@ export default function Admin() {
 
     // 🚨 関数: 予約の状態を強制的に変更する（呼出 / 受取済） (既存)
     const updateReservationStatus = async (id, newStatus) => {
+        // NOTE: window.confirm() は非推奨ですが、ここでは既存コードを維持します。
         const newStatusText = newStatus === 'called' ? '呼び出し中' : '受取済み';
         if (!window.confirm(`番号 ${id} のステータスを「${newStatusText}」に変更しますか？`)) return;
 
@@ -192,17 +205,20 @@ export default function Admin() {
                 throw new Error(`ステータス更新に失敗しました: ${response.status}`);
             }
             
+            // NOTE: alert() は非推奨ですが、ここでは既存コードを維持します。
             alert('ステータスが更新されました。');
             fetchReservations(); // 更新後、一覧をリフレッシュ
 
         } catch (error) {
             console.error('ステータス更新エラー:', error);
+            // NOTE: alert() は非推奨ですが、ここでは既存コードを維持します。
             alert('ステータス更新中にエラーが発生しました。サーバー側のエンドポイント実装を確認してください。');
         }
     };
     
     // 🚨 関数: 予約を削除する (既存)
     const deleteReservation = async (id, number) => {
+        // NOTE: window.confirm() は非推奨ですが、ここでは既存コードを維持します。
         if (!window.confirm(`番号 ${number} の予約を完全に削除しますか？`)) return;
 
         try {
@@ -219,11 +235,13 @@ export default function Admin() {
                 throw new Error(`削除に失敗しました: ${response.status}`);
             }
             
+            // NOTE: alert() は非推奨ですが、ここでは既存コードを維持します。
             alert(`番号 ${number} が削除されました。`);
             fetchReservations(); // 更新後、一覧をリフレッシュ
 
         } catch (error) {
             console.error('削除エラー:', error);
+            // NOTE: alert() は非推奨ですが、ここでは既存コードを維持します。
             alert('削除処理中にエラーが発生しました。サーバー側のエンドポイント実装を確認してください。');
         }
     };
