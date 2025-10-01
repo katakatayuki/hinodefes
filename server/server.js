@@ -25,7 +25,7 @@ try {
     });
 } catch (e) {
     console.error("Firebase initialization failed. Check FIREBASE_SERVICE_ACCOUNT variable.");
-    process.exit(1);\
+    process.exit(1);
 }
 
 const db = admin.firestore();
@@ -83,7 +83,6 @@ app.get('/api/order-summary', async (req, res) => {
         const stockLimits = stockDoc.exists ? stockDoc.data() : {};
 
         // 2. 現在の注文の集計
-        // 🚨 修正済み: Firestoreの制限を回避するため、否定クエリ(WHERE !=)を肯定クエリ(WHERE IN)に置き換え
         // ステータスが 'waiting' または 'called' の予約のみを対象とする
         const reservationsSnapshot = await db.collection('reservations')
             .where('status', 'in', ['waiting', 'called']) // 肯定系フィルタを使用
@@ -269,17 +268,17 @@ app.get('/api/tv-status', async (req, res) => {
         const tenMinutesAgo = new Date(now.toDate().getTime() - TEN_MINUTES_MS);
 
         // 呼び出し中 ('called') の予約を取得
+        // 🚨 修正済み: where句のみを使用し、複合インデックスのエラーを回避
         const calledSnapshot = await db.collection('reservations')
             .where('status', '==', 'called')
-            // 🚨 修正: 複合クエリによるインデックス不足エラーを回避するため、orderByを削除
             .get(); 
 
-        // 🚨 追加: Node.js側でソートを実行
+        // 🚨 Node.js側でソートを実行
         let calledReservations = calledSnapshot.docs.map(doc => doc.data());
 
         // calledAt (Timestampオブジェクト) に基づいて降順ソート
         calledReservations.sort((a, b) => {
-            // null/undefinedの場合は0として扱う（実際にはcalled==trueなのでnullはないはずだが念のため）
+            // Timestampオブジェクトをミリ秒に変換して比較
             const timeA = a.calledAt ? a.calledAt.toMillis() : 0;
             const timeB = b.calledAt ? b.calledAt.toMillis() : 0;
             return timeB - timeA; // 降順ソート (新しい時刻が前)
