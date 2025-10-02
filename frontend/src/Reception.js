@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 
 // 🚨 【要変更】あなたのRenderサーバーのURLに置き換えてください
 const SERVER_URL = "https://hinodefes.onrender.com"; 
-// 🚨 【要変更】LINE友だち追加QRコード画像のURLに置き換えてください
+// 🚨 【要変更】LINE友だち追QRコード画像のURLに置き換えてください
 // Firebase Hostingにアップロードした画像パスを設定
 const LINE_QR_CODE_URL = 'https://hinodefes-57609.web.app/QRCODE.png'; 
 
