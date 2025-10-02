@@ -32,6 +32,11 @@ const db = admin.firestore();
 const COUNTER_DOC = 'settings/counters';
 
 // ==========================================================
+// 定数定義 (追加)
+// ==========================================================
+const STOCK_LIMITS_DOC = 'settings/stockLimits';
+const SALES_STATS_DOC = 'settings/salesStats';
+// ==========================================================
 // LINE Push/Reply Utility (エラーログ強化版)
 // ==========================================================
 
@@ -195,7 +200,7 @@ async function processLineWebhookEvents(events, db) {
 }
 
 // ==========================================================
-// POST /api/reservations (予約登録) - 商品注文項目を追加
+// POST /api/reservations (予約登録) - 商品注文項目と在庫制限を追加 (修正/追加)
 // ==========================================================
 app.post('/api/reservations', async (req, res) => {
     try {
@@ -212,10 +217,47 @@ app.post('/api/reservations', async (req, res) => {
              return res.status(400).send("People must be a valid positive number.");
         }
 
-        // トランザクション処理 (番号の採番と保存を同時に行う)
+        // 🚨 【追加】在庫制限チェックをトランザクション内で行う
         const newNumber = await db.runTransaction(async (t) => {
             const counterRef = db.doc(COUNTER_DOC);
+            const stockLimitsRef = db.doc(STOCK_LIMITS_DOC);
+            const salesStatsRef = db.doc(SALES_STATS_DOC);
+
+            // カウンターと在庫制限、販売実績を取得
             const counterDoc = await t.get(counterRef);
+            const stockLimitsDoc = await t.get(stockLimitsRef);
+            const salesStatsDoc = await t.get(salesStatsRef);
+            
+            const limits = stockLimitsDoc.exists ? stockLimitsDoc.data() : {};
+            const currentSales = salesStatsDoc.exists ? salesStatsDoc.data() : {};
+            
+            // 🚨 在庫制限チェック
+            if (order && Object.keys(order).length > 0) {
+                for (const [itemKey, count] of Object.entries(order)) {
+                    if (count > 0) {
+                        const currentSold = currentSales[itemKey] || 0;
+                        const limit = limits[itemKey];
+
+                        if (limit !== undefined && limit !== null) {
+                            if (currentSold + count > limit) {
+                                // トランザクションをアボートして400エラーを返す
+                                throw new Error(`Stock limit exceeded for ${itemKey}. Available: ${limit - currentSold}`); 
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 🚨 販売実績を更新
+            if (order && Object.keys(order).length > 0) {
+                 for (const [itemKey, count] of Object.entries(order)) {
+                     if (count > 0) {
+                          t.set(salesStatsRef, {
+                              [itemKey]: admin.firestore.FieldValue.increment(count)
+                          }, { merge: true });
+                     }
+                 }
+            }
             
             let currentNumber = 1;
             const currentCounters = counterDoc.exists ? counterDoc.data() : {};
@@ -267,6 +309,10 @@ app.post('/api/reservations', async (req, res) => {
 
     } catch (e) {
         console.error("Error creating reservation:", e);
+        // 在庫制限エラーの場合、クライアントに具体的なメッセージを返す
+        if (e.message.startsWith('Stock limit exceeded')) {
+            return res.status(400).json({ error: e.message });
+        }
         res.status(500).json({ error: "Failed to create reservation" });
     }
 });
@@ -410,6 +456,38 @@ app.post('/api/compute-call', async (req, res) => {
     }
 });
 
+
+// ==========================================================
+// GET /api/sales-stats (管理画面用: 販売実績の取得) (追加)
+// ==========================================================
+app.get('/api/sales-stats', async (req, res) => {
+    try {
+        // API Secretでの認証が必要な場合はここで実装 (Admin.js側でAPI Secretを渡していないため、この例では認証なしで実装)
+        // if (req.query.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden');
+
+        const salesStatsDoc = await db.doc(SALES_STATS_DOC).get();
+        const stockLimitsDoc = await db.doc(STOCK_LIMITS_DOC).get();
+
+        const stats = salesStatsDoc.exists ? salesStatsDoc.data() : {};
+        const limits = stockLimitsDoc.exists ? stockLimitsDoc.data() : {};
+        
+        // 販売実績と制限値をマージして、利用しやすい形式で返す
+        const result = {};
+        const allKeys = new Set([...Object.keys(stats), ...Object.keys(limits)]);
+        
+        allKeys.forEach(key => {
+            result[key] = {
+                sold: stats[key] || 0,
+                limit: limits[key] !== undefined ? limits[key] : null // 制限がない場合はnull
+            };
+        });
+
+        res.json(result);
+    } catch (e) {
+        console.error("Error fetching sales stats:", e);
+        res.status(500).json({ error: "Failed to fetch sales statistics" });
+    }
+});
 
 // ==========================================================
 // GET /api/waiting-summary
