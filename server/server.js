@@ -276,10 +276,9 @@ async function processLineWebhookEvents(events, db) {
 }
 
 // ==========================================================
-// POST /api/reserve (予約登録) - 商品注文項目を追加＆販売実績を更新
+// POST /api/reserve (予約登録) - 商品注文項目を追加
 // ==========================================================
 app.post('/api/reserve', async (req, res) => {
-    // ⚠ 注意: admin, db, COUNTER_DOC, SALES_STATS_DOC がスコープ内で定義されていることを前提とする
     const userData = req.body;
     const { group, name, people } = userData;
 
@@ -288,10 +287,10 @@ app.post('/api/reserve', async (req, res) => {
     }
 
     try {
-        // トランザクション内で在庫チェック、カウンター更新、販売実績更新、予約登録を行う
+        // トランザクション内で在庫チェックと予約登録を行う
         const result = await db.runTransaction(async (t) => {
             
-            // 0. 在庫制限ドキュメントを取得し、注文を検証
+            // 0. 在庫制限ドキュメントを取得
             const stockLimitsRef = db.doc('settings/stockLimits');
             const stockLimitsSnap = await t.get(stockLimitsRef);
             if (!stockLimitsSnap.exists) {
@@ -302,12 +301,11 @@ app.post('/api/reserve', async (req, res) => {
 
             // 注文内容を検証
             if (!userData.items || typeof userData.items !== 'object' || Object.keys(userData.items).length === 0) {
-                // itemsが不正または空の場合、在庫チェックをスキップするためにここでエラーにする
                 throw new Error("Items data is invalid or missing.");
             }
             for (const itemKey in userData.items) {
-                const orderedAmount = parseInt(userData.items[itemKey], 10);
-                const limit = stockLimits[itemKey] || 0; // 制限がない場合は0とする
+                const orderedAmount = userData.items[itemKey];
+                const limit = stockLimits[itemKey] || 0;
                 if (orderedAmount > limit) {
                     throw new Error(`Order for ${itemKey} (${orderedAmount}) exceeds the limit (${limit}).`);
                 }
@@ -319,61 +317,32 @@ app.post('/api/reserve', async (req, res) => {
             
             let currentNumber = 1;
             const currentCounters = counterDoc.exists ? counterDoc.data() : {};
-            const groupCounterKey = group.replace(/[^a-zA-Z0-9]/g, ''); // フィールドキーとして安全なものに変換
 
-            if (currentCounters[groupCounterKey]) {
-                // updatedAtフィールドがない場合を考慮し、存在チェックを行う
-                const lastUpdatedTimestamp = currentCounters[groupCounterKey].updatedAt;
-                
-                if (lastUpdatedTimestamp) {
-                    const lastUpdated = lastUpdatedTimestamp.toDate();
-                    const now = new Date();
-                    const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
+            if (currentCounters[group]) {
+                const lastUpdated = currentCounters[group].updatedAt.toDate();
+                const now = new Date();
+                const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
 
-                    if (now.getTime() - lastUpdated.getTime() > TWELVE_HOURS_MS) {
-                        currentNumber = 1; 
-                    } else {
-                        currentNumber = currentCounters[groupCounterKey].currentNumber + 1;
-                    }
+                if (now.getTime() - lastUpdated.getTime() > TWELVE_HOURS_MS) {
+                    currentNumber = 1; 
                 } else {
-                    // updatedAtがない場合もリセットせず、インクリメントする
-                    currentNumber = currentCounters[groupCounterKey].currentNumber + 1;
+                    currentNumber = currentCounters[group].currentNumber + 1;
                 }
             }
-            const nextNumber = currentNumber; // 採番された次の番号
-
+            
             // 2. カウンターを更新
             t.update(counterRef, {
-                [groupCounterKey]: { 
-                    currentNumber: nextNumber, 
+                [group]: { 
+                    currentNumber: currentNumber, 
                     updatedAt: admin.firestore.FieldValue.serverTimestamp()
                 }
             });
 
-            // 3. 販売実績 (salesStats) の更新ロジック
-            const salesStatsRef = db.doc(SALES_STATS_DOC);
-            const salesUpdate = {};
-
-            // 注文内容 (userData.items) を処理し、加算するオブジェクトを作成
-            for (const key in userData.items) {
-                const count = parseInt(userData.items[key], 10);
-                // 注文数が1個以上の場合のみ更新対象とする
-                if (count > 0) {
-                    // Firestoreの FieldValue.increment を使用して、安全に数値を加算
-                    salesUpdate[key] = admin.firestore.FieldValue.increment(count);
-                }
-            }
-
-            // 更新対象の商品があれば、salesStatsドキュメントを更新
-            if (Object.keys(salesUpdate).length > 0) {
-                t.set(salesStatsRef, salesUpdate, { merge: true });
-            }
-            
-            // 4. 予約ドキュメントを作成
+            // 3. 予約ドキュメントを作成
             const newReservationRef = db.collection('reservations').doc();
             
             const groupPrefix = group.replace('-', '');
-            const fullReservationNumber = `${groupPrefix}-${nextNumber}`; 
+            const fullReservationNumber = `${groupPrefix}-${currentNumber}`; 
             
             const reservationData = {
                 name: userData.name, 
@@ -387,7 +356,7 @@ app.post('/api/reserve', async (req, res) => {
                 calledAt: null,
                 seatEnterAt: null,
                 notes: userData.notes || "",
-                items: userData.items || {}, // 注文内容を追加
+                items: userData.items, // 注文内容を追加
             };
             
             t.set(newReservationRef, reservationData);
@@ -398,21 +367,17 @@ app.post('/api/reserve', async (req, res) => {
         res.json(result);
 
     } catch (e) {
-        // エラーハンドリング
+        // エラーハンドリングを修正
         console.error("Reservation registration failed:", e.message);
         // 在庫切れなどの具体的なエラーメッセージをクライアントに返す
         if (e.message.includes("exceeds the limit")) {
             return res.status(400).send("注文数が在庫上限を超えています。");
         }
-        if (e.message.includes("is invalid or missing")) {
-             return res.status(400).send("商品注文データが不正または不足しています。");
-        }
-        if (e.message.includes("Stock limits setting is not found")) {
-            return res.status(500).send("サーバーの設定に問題があります。");
-        }
         res.status(500).send("サーバーエラーにより登録に失敗しました。");
     }
 });
+
+
 // ==========================================================
 // POST /api/line-webhook: LINEからのイベント処理 (即時応答を確保)
 // ==========================================================
