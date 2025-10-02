@@ -33,32 +33,43 @@ const COUNTER_DOC = 'settings/counters';
 
 // server.js の任意の場所に追加
 
+// server.js のどこかにある、GET /api/stock-limits ルート全体を以下のコードに置き換えてください。
+
 // ==========================================================
-// GET /api/stock-limits: 在庫制限の取得
+// GET /api/stock-limits: 残り在庫数の計算と取得
 // ==========================================================
 app.get('/api/stock-limits', async (req, res) => {
     try {
-        // Firestoreから在庫制限ドキュメントを取得
-        // パス: 'settings/stockLimits'
-        const stockDoc = await db.doc('settings/stockLimits').get(); 
-
-        if (!stockDoc.exists) {
-            // ドキュメントがない場合、全て0のデータを返す
-            return res.json({
-                nikuman: 0,
-                pizaman: 0,
-                anman: 0,
-                chocoman: 0,
-                oolongcha: 0,
-            });
-        }
+        // 1. 最大販売数 (Stock Limits) と 販売実績 (Sales Stats) の両方のドキュメントを取得
+        const [stockDoc, salesDoc] = await Promise.all([
+            db.doc('settings/stockLimits').get(), 
+            db.doc('settings/salesStats').get() 
+        ]);
         
-        // Firestoreから取得したデータをそのままクライアントに返す
-        // (キーが Reception.js と一致している前提)
-        res.json(stockDoc.data());
+        // データの初期値（ドキュメントが存在しない場合を考慮）
+        const maxLimits = stockDoc.exists ? stockDoc.data() : {};
+        const salesStats = salesDoc.exists ? salesDoc.data() : {};
+
+        // クライアント (Reception.js) が期待する全商品キーのリスト
+        const itemKeys = ['nikuman', 'pizaman', 'anman', 'chocoman', 'oolongcha'];
+
+        // 2. 残り在庫数を計算
+        const remainingStock = {};
+        
+        itemKeys.forEach(key => {
+            // 最大販売数 - 販売実績 を計算
+            const max = maxLimits[key] || 0;
+            const sold = salesStats[key] || 0;
+            
+            // 残り在庫数は 0 未満にならないように Math.max(0, ...) で制限
+            remainingStock[key] = Math.max(0, max - sold);
+        });
+
+        // 3. クライアントに残りの在庫数データを返す
+        res.json(remainingStock);
 
     } catch (e) {
-        console.error("Error fetching stock limits:", e);
+        console.error("Error fetching remaining stock limits:", e);
         res.status(500).json({ error: "Failed to fetch stock limits" });
     }
 });
