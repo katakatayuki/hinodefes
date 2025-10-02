@@ -63,6 +63,38 @@ app.get('/api/stock-limits', async (req, res) => {
     }
 });
 
+// server.js の任意の場所（例：既存のAPIルート群の最後など）に追加
+
+// ==========================================================
+// GET /api/sales-stats: 販売実績の取得 (Admin.jsが使用)
+// ==========================================================
+app.get('/api/sales-stats', async (req, res) => {
+    try {
+        // 1. Firestoreから販売実績ドキュメントを取得
+        // パス: 'settings/salesStats'
+        const salesDoc = await db.doc('settings/salesStats').get(); 
+
+        if (!salesDoc.exists) {
+            // ドキュメントがない場合、全ての販売実績を0として返す
+            return res.json({
+                nikuman: 0,
+                pizaman: 0,
+                anman: 0,
+                chocoman: 0,
+                oolongcha: 0,
+            });
+        }
+        
+        // 2. 取得したデータをそのままクライアント（Admin.js）に返す
+        // (FirestoreのキーとAdmin.jsのキーが一致しているため、変換は不要)
+        res.json(salesDoc.data());
+
+    } catch (e) {
+        console.error("Error fetching sales statistics:", e);
+        res.status(500).json({ error: "Failed to fetch sales statistics" });
+    }
+});
+
 // ==========================================================
 // LINE Push/Reply Utility (エラーログ強化版)
 // ==========================================================
