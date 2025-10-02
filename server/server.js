@@ -1,5 +1,5 @@
 const express = require('express');
-const cors = require('cors'); 
+const cors = require('cors');
 const admin = require('firebase-admin');
 const fetch = require('node-fetch');
 
@@ -11,14 +11,14 @@ const app = express();
 // CORSを詳細に設定
 app.use(cors({
     origin: '*', // すべてのドメインからのアクセスを許可
-    methods: ['GET', 'POST', 'DELETE', 'PUT'] 
+    methods: ['GET', 'POST', 'DELETE', 'PUT']
 }));
 
 app.use(express.json());
 
 // Firebaseの初期化
 try {
-    // 環境変数からサービスアカウント情報をロード（Renderなどの環境を想定）
+    // 環境変数からサービスアカウント情報をロード
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
@@ -30,12 +30,11 @@ try {
 
 const db = admin.firestore();
 const COUNTER_DOC = 'settings/counters';
-
-// 🚨 【追加】在庫設定用のドキュメントパス
-const INVENTORY_DOC = 'settings/inventory';
+const STOCK_LIMITS_DOC = 'settings/stockLimits'; // 最初のプログラムの在庫制限ドキュメント
+const INVENTORY_DOC = 'settings/inventory'; // 在庫設定ドキュメント（管理画面用）
 
 // ==========================================================
-// LINE Push/Reply Utility (エラーログ強化版)
+// LINE Push Utility
 // ==========================================================
 
 /**
@@ -45,82 +44,118 @@ const INVENTORY_DOC = 'settings/inventory';
  */
 async function sendLinePush(toUserId, messageText) {
     if (!process.env.LINE_ACCESS_TOKEN) {
-        console.error("LINE_ACCESS_TOKEN is not set. Cannot send LINE message.");
+        console.error("LINE_ACCESS_TOKEN is not set. Cannot send LINE push message.");
         return;
     }
-    
-    const lineApiUrl = 'https://api.line.me/v2/bot/message/push';
-    
+
+    const url = 'https://api.line.me/v2/bot/message/push';
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.LINE_ACCESS_TOKEN}`
+    };
+
+    const body = JSON.stringify({
+        to: toUserId,
+        messages: [{
+            type: 'text',
+            text: messageText,
+        }]
+    });
+
     try {
-        const response = await fetch(lineApiUrl, {
+        const response = await fetch(url, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${process.env.LINE_ACCESS_TOKEN}`
-            },
-            body: JSON.stringify({
-                to: toUserId,
-                messages: [{
-                    type: 'text',
-                    text: messageText
-                }]
-            })
+            headers: headers,
+            body: body
         });
 
-        if (response.status !== 200) {
-            const errorBody = await response.json();
-            console.error(`LINE Push API failed (Status: ${response.status}):`, errorBody);
+        if (!response.ok) {
+            const errorBody = await response.text();
+            console.error(`LINE Push failed for user ${toUserId}. Status: ${response.status}. Body: ${errorBody}`);
+        } else {
+            console.log(`LINE Push successful for user ${toUserId}.`);
         }
-
     } catch (error) {
-        console.error("Error sending LINE push message:", error);
+        console.error(`Error during LINE Push for user ${toUserId}:`, error);
     }
 }
 
 // ==========================================================
-// POST /api/reservation (予約受付)
-// 【FirestoreトランザクションのRead/Writeルールに準拠するよう修正済み】
+// 認証ミドルウェア (管理用APIで使用)
 // ==========================================================
-app.post('/api/reservation', async (req, res) => {
+/**
+ * API Secretによる認証チェック
+ * @param {object} req - Expressリクエストオブジェクト
+ * @returns {boolean} - 認証成功ならtrue
+ */
+const authenticate = (req) => {
+    const apiSecret = process.env.API_SECRET;
+    if (!apiSecret) {
+        console.error("API_SECRET is not set.");
+        return false;
+    }
+
+    // 1. Bearer Headerからの認証を試みる
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        const headerSecret = authHeader.split(' ')[1];
+        if (headerSecret === apiSecret) {
+            return true;
+        }
+    }
+
+    // 2. リクエストボディからの認証を試みる (DELETEはqueryからも可)
+    const bodySecret = req.body.apiSecret || req.query.apiSecret;
+    if (bodySecret === apiSecret) {
+        return true;
+    }
+
+    return false;
+};
+
+const requireAuth = (req, res, next) => {
+    if (authenticate(req)) {
+        next();
+    } else {
+        res.status(403).send('Forbidden: Invalid API Secret');
+    }
+};
+
+
+// ==========================================================
+// POST /api/reserve-number (整理番号の発行と予約/在庫チェック)
+// = S-1: 在庫チェックと番号発行をトランザクションで統合
+// ==========================================================
+app.post('/api/reserve-number', async (req, res) => {
     try {
-        const { name, people, wantsLine, lineId, order, apiSecret } = req.body;
+        const { group, name, people, lineId, wantsLine, order } = req.body;
         
-        // 開発環境でのAPI Secretチェックをスキップ (今回はテストのため)
-        // if (apiSecret !== process.env.API_SECRET) return res.status(403).send('Forbidden');
+        const totalOrder = Object.values(order || {}).reduce((sum, count) => sum + count, 0);
 
-        // トランザクションを開始
-        const result = await db.runTransaction(async (t) => {
+        let newNumber;
+        let docRef;
+
+        await db.runTransaction(async (t) => {
+            // ----------------------------------------------------
+            // 1. 【READS START】在庫制限とアクティブな予約を読み取る
+            // ----------------------------------------------------
+            const counterRef = db.doc(COUNTER_DOC);
+            const counterDoc = await t.get(counterRef);
             
-            // ----------------------------------------------------
-            // 1. 【READS START】すべての読み取りを先に実行
-            // ----------------------------------------------------
-            const counterRef = db.doc(COUNTER_DOC); // 参照の定義
-            const counterDoc = await t.get(counterRef); // READ 1: カウンターの読み取り
-
-            // 注文の合計数を計算 (I/OではないためREADの前に実行可能)
-            const totalOrder = Object.values(order).reduce((sum, count) => sum + count, 0);
-
             let stockLimits = {};
-            let currentOrderedCount = {};
-            let activeReservationsSnapshot = null;
-            
             if (totalOrder > 0) {
-                // READ 2: 在庫制限の読み取り
-                const stockDoc = await t.get(db.collection('settings').doc('stockLimits'));
+                // READ: 在庫制限の読み取り
+                const stockDoc = await t.get(db.doc(STOCK_LIMITS_DOC));
                 stockLimits = stockDoc.exists ? stockDoc.data() : {};
                 
-                // READ 3: アクティブな予約の読み取り (トランザクション内でのクエリ実行)
-                activeReservationsSnapshot = await t.get(db.collection('reservations')
+                // READ: アクティブな予約の読み取り
+                const activeReservationsSnapshot = await t.get(db.collection('reservations')
                     .where('status', 'in', ['waiting', 'called']));
-            }
-            // ----------------------------------------------------
-            // 【READS END】
 
-            // ----------------------------------------------------
-            // 2. 【ロジック】読み取りデータを用いた在庫チェック
-            // ----------------------------------------------------
-            if (totalOrder > 0 && activeReservationsSnapshot) {
-                // 既存の予約の注文合計を計算 (I/Oなし)
+                // ----------------------------------------------------
+                // 2. 【ロジック】在庫チェック
+                // ----------------------------------------------------
+                let currentOrderedCount = {};
                 activeReservationsSnapshot.forEach(doc => {
                     const data = doc.data();
                     const existingOrder = data.order || {};
@@ -145,43 +180,34 @@ app.post('/api/reservation', async (req, res) => {
             // ----------------------------------------------------
             // 3. 【WRITES START】カウンターのインクリメントと予約の登録
             // ----------------------------------------------------
-            // カウンターをインクリメント (WRITE 1)
-            let currentNumber = 1;
-            if (counterDoc.exists) {
-                const data = counterDoc.data();
-                currentNumber = (data.currentNumber || 0) + 1;
-                t.update(counterRef, { currentNumber, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-            } else {
-                t.set(counterRef, { currentNumber, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-            }
+            const currentCount = counterDoc.exists ? (counterDoc.data().count || 0) : 0;
+            newNumber = currentCount + 1;
+
+            // カウンターを更新 (WRITE 1)
+            t.set(counterRef, { count: newNumber, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
 
             // 予約を登録 (WRITE 2)
-            const newReservation = {
-                number: currentNumber,
-                name,
-                people: parseInt(people, 10),
-                wantsLine: !!wantsLine,
-                lineId: wantsLine ? lineId : null,
+            docRef = db.collection('reservations').doc();
+            await t.set(docRef, {
+                number: newNumber,
+                group: group || 'default', // '5-5' or '5-2'
+                name: name || null,
+                people: parseInt(people, 10) || 1,
+                status: 'waiting',
+                lineId: lineId || null,
+                wantsLine: wantsLine || false,
                 order: order || {},
-                status: 'waiting', // 初期ステータスは 'waiting'
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
                 calledAt: null,
                 seatEnterAt: null,
-                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            };
-
-            const docRef = db.collection('reservations').doc();
-            t.set(docRef, newReservation);
-
-            return { number: currentNumber, docId: docRef.id };
+            });
         });
-        
-        // 予約番号を返す
-        res.json({ success: true, number: result.number, id: result.docId });
+
+        res.json({ success: true, number: newNumber, id: docRef.id });
 
     } catch (e) {
-        console.error("Error creating reservation:", e);
-        // 在庫制限エラーの場合、クライアントにエラーメッセージを返す
+        console.error("Error reserving number:", e);
         if (e.message.includes('在庫制限')) {
              res.status(400).json({ success: false, message: e.message });
         } else {
@@ -192,44 +218,170 @@ app.post('/api/reservation', async (req, res) => {
 
 
 // ==========================================================
-// GET /api/reservations (予約一覧の取得) - 🚨 認証スキップ版
+// POST /api/compute-call (次の人を複数呼び出し - 団体別)
+// = S-2: 団体と人数を指定して複数の待ちをトランザクションで処理
+// ==========================================================
+app.post('/api/compute-call', requireAuth, async (req, res) => {
+    try {
+        const { availableCount, callGroup } = req.body;
+        const countToCall = parseInt(availableCount, 10) || 1; 
+        const targetGroup = callGroup || 'default';
+
+        let calledDocsData = []; // LINE通知用データを保持
+
+        await db.runTransaction(async (t) => {
+            
+            // 🚨 指定団体・waitingステータスの予約を番号順に、呼び出し人数分だけ取得
+            const snapshot = await t.get(db.collection('reservations')
+                .where('status', '==', 'waiting')
+                .where('group', '==', targetGroup) 
+                .orderBy('number', 'asc')
+                .limit(countToCall)); 
+
+            if (snapshot.empty) {
+                return; // 呼び出す待ちがない
+            }
+
+            // 取得した全ての予約を 'called' に更新
+            snapshot.docs.forEach(doc => {
+                const reservationRef = doc.ref;
+                const data = doc.data();
+                
+                // ステータスを 'called' に更新し、呼び出し時刻を記録
+                t.update(reservationRef, {
+                    status: 'called',
+                    calledAt: admin.firestore.FieldValue.serverTimestamp(),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+                
+                // LINE通知用にデータを保持
+                calledDocsData.push({ number: data.number, lineId: data.lineId, wantsLine: data.wantsLine });
+            });
+            
+        });
+
+        // LINE通知（トランザクション成功後に実行）
+        for (const data of calledDocsData) {
+            if (data.wantsLine && data.lineId) {
+                const message = `【${data.number}番】のお客様、お待たせいたしました！間もなくお席にご案内します。受付にお越しください。`;
+                sendLinePush(data.lineId, message);
+            }
+        }
+        
+        const calledNumbers = calledDocsData.map(d => d.number);
+
+        // 呼び出した番号のリストを返す
+        if (calledNumbers.length > 0) {
+            // TV表示用の最新呼び出し番号を記録する例
+            await db.doc('tv_display/latest_call').set({ numbers: calledNumbers, time: admin.firestore.FieldValue.serverTimestamp() });
+            res.json({ success: true, called: calledNumbers });
+        } else {
+            res.json({ success: true, called: [] });
+        }
+
+    } catch (e) {
+        console.error("Error calling next reservation:", e);
+        res.status(500).send("Call next failed.");
+    }
+});
+
+// ==========================================================
+// PUT /api/update-status/:id (予約ステータス更新 - 時刻スタンプ記録付き)
+// = S-3: ステータスに応じて時刻スタンプを更新し、LINE通知を行う
+// ==========================================================
+app.put('/api/update-status/:id', requireAuth, async (req, res) => {
+    try {
+        const { status } = req.body;
+        const reservationRef = db.collection('reservations').doc(req.params.id);
+        
+        if (!['waiting', 'called', 'seatEnter', 'cancel', 'noShow'].includes(status)) {
+             return res.status(400).send('Invalid status value.');
+        }
+
+        const updateData = { 
+            status: status,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        // 時刻スタンプの更新ロジック (最初のプログラムの機能を復元)
+        if (status === 'called') {
+            updateData.calledAt = admin.firestore.FieldValue.serverTimestamp();
+            updateData.seatEnterAt = null; // 着席時刻はクリア
+        } else if (status === 'seatEnter') {
+            updateData.seatEnterAt = admin.firestore.FieldValue.serverTimestamp();
+            // calledAtはそのまま維持
+        } else if (status === 'waiting' || status === 'cancel' || status === 'noShow') {
+            updateData.calledAt = null; // 呼び出し時刻をクリア
+            updateData.seatEnterAt = null; // 着席時刻をクリア
+        }
+
+        // 'seatEnter'になったら、LINEに完了通知を送信（任意）
+        let lineNotificationData = null;
+        if (status === 'seatEnter') {
+            const doc = await reservationRef.get();
+            const data = doc.data();
+            
+            if (data && data.wantsLine && data.lineId) {
+                lineNotificationData = { number: data.number, lineId: data.lineId };
+            }
+        }
+        
+        await reservationRef.update(updateData);
+        
+        // トランザクション外でLINE通知を実行
+        if (lineNotificationData) {
+            const message = `【${lineNotificationData.number}番】ありがとうございます。お料理の準備ができました。ゆっくりお楽しみください！`;
+            sendLinePush(lineNotificationData.lineId, message);
+        }
+
+        res.json({ success: true, id: req.params.id, newStatus: status });
+
+    } catch (e) {
+        console.error("Error updating status:", e);
+        res.status(500).send("Status update failed.");
+    }
+});
+
+
+// ==========================================================
+// GET /api/reservations (予約一覧取得 - 管理/表示用)
 // ==========================================================
 app.get('/api/reservations', async (req, res) => {
     try {
-        // 認証チェックをスキップ (テストのため)
-        // const authHeader = req.headers.authorization;
-        // if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        //     return res.status(403).send('Forbidden: Authorization header missing or malformed.');
-        // }
-        // const apiSecret = authHeader.split(' ')[1];
-        // if (apiSecret !== process.env.REACT_APP_API_SECRET && apiSecret !== process.env.API_SECRET) {
-        //     return res.status(403).send('Forbidden: Invalid API Secret.');
-        // }
+        // GETでの認証は、API Secretをクエリとして渡すか、認証なしとして扱う (ここでは認証なしを許可)
+        // if (!authenticate(req)) { return res.status(403).send('Forbidden'); }
 
+        const snapshot = await db.collection('reservations').orderBy('number', 'asc').get();
+        const reservations = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-        // 全予約を番号 (number) 順に取得
-        const snapshot = await db.collection('reservations')
-            .orderBy('number', 'asc') // 番号順にソートして取得
-            .get();
-
-        const reservations = snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-        }));
-
-        res.json(reservations);
+        res.json({ success: true, reservations });
 
     } catch (e) {
         console.error("Error fetching reservations:", e);
-        res.status(500).send("Reservation list fetch failed.");
+        res.status(500).send("Reservation fetch failed.");
+    }
+});
+
+
+// ==========================================================
+// DELETE /api/delete-reservation/:id (予約削除)
+// ==========================================================
+app.delete('/api/delete-reservation/:id', requireAuth, async (req, res) => {
+    try {
+        const reservationRef = db.collection('reservations').doc(req.params.id);
+        await reservationRef.delete();
+        res.json({ success: true, id: req.params.id });
+    } catch (e) {
+        console.error("Error deleting reservation:", e);
+        res.status(500).send("Reservation deletion failed.");
     }
 });
 
 
 // ==========================================================
 // GET /api/order-summary (注文合計と在庫制限の取得)
+// = S-4: 最初のプログラムの注文集計ロジックを復元
 // ==========================================================
-// 現在の全注文の合計数と在庫制限を返すAPI
 app.get('/api/order-summary', async (req, res) => {
     try {
         // 'waiting'または'called'ステータスの予約のみを対象とする
@@ -247,7 +399,7 @@ app.get('/api/order-summary', async (req, res) => {
         });
 
         // 在庫制限を取得
-        const stockDoc = await db.collection('settings').doc('stockLimits').get();
+        const stockDoc = await db.doc(STOCK_LIMITS_DOC).get();
         const stockLimits = stockDoc.exists ? stockDoc.data() : {};
 
 
@@ -263,179 +415,34 @@ app.get('/api/order-summary', async (req, res) => {
     }
 });
 
-
 // ==========================================================
-// 🚨 【追加】GET /api/stock-limits
-// 在庫制限データのみを返すAPI
+// GET /api/inventory (在庫取得 - 管理画面用)
 // ==========================================================
-app.get('/api/stock-limits', async (req, res) => {
+app.get('/api/inventory', requireAuth, async (req, res) => {
     try {
-        // 在庫制限データを取得
-        // settings/stockLimits ドキュメントからデータを取得する
-        const stockDoc = await db.collection('settings').doc('stockLimits').get();
-        // 在庫制限がない場合は、初期値として空のオブジェクトを返す
-        const stockLimits = stockDoc.exists ? stockDoc.data() : {};
+        const inventoryRef = db.doc(INVENTORY_DOC);
+        const doc = await inventoryRef.get();
+        
+        // 在庫設定がない場合は空のオブジェクトを返す
+        const items = doc.exists ? doc.data().items : {};
 
-        // 在庫制限データのみをレスポンスとして返す
-        res.json(stockLimits);
+        res.json({ success: true, items });
 
     } catch (e) {
-        console.error('Error fetching stock limits:', e);
-        res.status(500).send("Stock limits fetch failed.");
+        console.error("Error fetching inventory:", e);
+        res.status(500).send("Inventory fetch failed.");
     }
 });
 
 
 // ==========================================================
-// POST /api/compute-call (次の人を呼び出し)
+// POST /api/inventory (在庫更新 - 管理画面用)
 // ==========================================================
-app.post('/api/compute-call', async (req, res) => {
+app.post('/api/inventory', requireAuth, async (req, res) => {
     try {
-        // if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('Forbidden'); // 🚨 テストのため無効化
-
-        let calledId = null;
-
-        await db.runTransaction(async (t) => {
-            // 'waiting'ステータスの予約を番号順に取得
-            const snapshot = await t.get(db.collection('reservations')
-                .where('status', '==', 'waiting')
-                .orderBy('number', 'asc')
-                .limit(1));
-
-            if (snapshot.empty) {
-                // 呼び出す待ちがない
-                return;
-            }
-
-            const doc = snapshot.docs[0];
-            const reservationRef = doc.ref;
-            const data = doc.data();
-            calledId = doc.id;
-
-            // ステータスを 'called' に更新し、呼び出し時刻を記録
-            t.update(reservationRef, {
-                status: 'called',
-                calledAt: admin.firestore.FieldValue.serverTimestamp(),
-                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            });
-
-            // LINE通知の必要があればプッシュメッセージを送信
-            if (data.wantsLine && data.lineId) {
-                // トランザクション外で処理するために必要な情報を変数に保持
-                // LINE送信はI/Oが絡むためトランザクション外で行うべき
-                // ここでは`calledId`と`data.lineId`の保持に留める
-            }
-        });
-
-        // LINE通知（トランザクション成功後に実行）
-        if (calledId) {
-            // 呼び出し後にデータを再取得してLINE IDを確認する方が確実だが、
-            // トランザクション内のデータを利用する（今回は単純化のため）
-            const doc = await db.collection('reservations').doc(calledId).get();
-            const data = doc.data();
-            
-            if (data && data.wantsLine && data.lineId) {
-                const message = `【${data.number}番】のお客様、お待たせいたしました！間もなくお席にご案内します。受付にお越しください。`;
-                // LINE送信はawaitしない (レスポンスをブロックしないため)
-                sendLinePush(data.lineId, message);
-            }
-        }
-        
-        res.json({ success: true, calledId });
-
-    } catch (e) {
-        console.error("Error calling next reservation:", e);
-        res.status(500).send("Call next failed.");
-    }
-});
-
-
-// ==========================================================
-// PUT /api/reservations/:id (ステータス更新)
-// ==========================================================
-app.put('/api/reservations/:id', async (req, res) => {
-    try {
-        // if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('Forbidden'); // 🚨 テストのため無効化
-        
-        const { id } = req.params;
-        const { status } = req.body; // 'waiting', 'called', 'seatEnter', 'cancel'
-
-        const reservationRef = db.collection('reservations').doc(id);
-        
-        const updateData = { status, updatedAt: admin.firestore.FieldValue.serverTimestamp() };
-
-        if (status === 'called') {
-            // 呼び出し時刻を記録
-            updateData.calledAt = admin.firestore.FieldValue.serverTimestamp();
-            updateData.seatEnterAt = null;
-        } else if (status === 'seatEnter') {
-            // 着席時刻を記録（calledAtをクリアする必要はない）
-            updateData.seatEnterAt = admin.firestore.FieldValue.serverTimestamp();
-            // calledAtはそのまま維持
-        } else if (status === 'waiting' || status === 'cancel') {
-            // 待機中またはキャンセルの場合、呼び出し時刻と着席時刻をクリア
-            updateData.calledAt = null;
-            updateData.seatEnterAt = null;
-        }
-        
-        // 'seatEnter'になったら、LINEに完了通知を送信（任意）
-        if (status === 'seatEnter') {
-            const doc = await reservationRef.get();
-            const data = doc.data();
-            
-            if (data && data.wantsLine && data.lineId) {
-                const message = `【${data.number}番】ありがとうございます。お料理の準備ができました。ゆっくりお楽しみください！`;
-                // LINE送信はawaitしない
-                sendLinePush(data.lineId, message);
-            }
-        }
-
-        await reservationRef.update(updateData);
-        
-        res.json({ success: true, id, newStatus: status });
-
-    } catch (e) {
-        console.error(`Error updating reservation ${req.params.id}:`, e);
-        res.status(500).send("Status update failed.");
-    }
-});
-
-
-// ==========================================================
-// DELETE /api/reservations/:id (管理画面からの削除)
-// ==========================================================
-app.delete('/api/reservations/:id', async (req, res) => {
-    try {
-        // if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden'); // 🚨 テストのため無効化
-        
-        const { id } = req.params;
-
-        const reservationRef = db.collection('reservations').doc(id);
-        
-        await reservationRef.delete();
-        
-        res.json({ success: true, id });
-
-    } catch (e) {
-        console.error(`Error deleting reservation ${req.params.id}:`, e);
-        res.status(500).send("Reservation deletion failed.");
-    }
-});
-
-
-// ==========================================================
-// POST /api/inventory (在庫の更新)
-// ==========================================================
-// 🚨 【追加】在庫設定API
-app.post('/api/inventory', async (req, res) => {
-    try {
-        // 🚨 【修正】テスト段階のためAPI Secretチェックを一時的にスキップ
-        // if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('Forbidden'); 
-
-        const { items, apiSecret } = req.body;
-        
+        const { items } = req.body;
         if (!items || typeof items !== 'object') {
-            return res.status(400).send("Invalid items data.");
+            return res.status(400).send('Invalid items data.');
         }
 
         const inventoryRef = db.doc(INVENTORY_DOC);
@@ -452,7 +459,7 @@ app.post('/api/inventory', async (req, res) => {
 });
 
 // ==========================================================
-// 🚨 【追加】GET /api/sales (販売数の集計)
+// GET /api/sales (販売数の集計)
 // ==========================================================
 app.get('/api/sales', async (req, res) => {
     try {
@@ -484,8 +491,8 @@ app.get('/api/sales', async (req, res) => {
 });
 
 
-// サーバーの待ち受け開始
-const PORT = process.env.PORT || 3000;
+// サーバーの待ち受け
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`Server listening on port ${PORT}`);
 });
