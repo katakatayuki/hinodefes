@@ -5,12 +5,8 @@ const fetch = require('node-fetch');
 
 const app = express();
 
-
-// 🚨 【追加】販売実績キュメントのパス
-const SALES_STATS_DOC = 'settings/salesStats'; 
-
 // ==========================================================
-// サバ設定
+// サーバー設定
 // ==========================================================
 // CORSを詳細に設定
 app.use(cors({
@@ -23,12 +19,28 @@ app.use(express.json());
 // Firebaseの初期化
 try {
     // 環境変数からサービスアカウント情報をロード（Renderなどの環境を想定）
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    let serviceAccount;
+    
+    if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+        throw new Error("FIREBASE_SERVICE_ACCOUNT環境変数が設定されていません。");
+    }
+
+    try {
+        // JSON文字列をパース
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    } catch (parseError) {
+        // パースエラーが発生した場合、詳細をログに出力
+        console.error("🔥 JSON PARSE ERROR: FIREBASE_SERVICE_ACCOUNTのJSON形式が不正です。改行や不要な文字がないか確認してください。", parseError.message);
+        throw new Error("JSON形式エラー");
+    }
+
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
     });
+    console.log("✅ Firebase Admin SDK initialized successfully.");
+
 } catch (e) {
-    console.error("Firebase initialization failed. Check FIREBASE_SERVICE_ACCOUNT variable.");
+    console.error(`❌ Firebase initialization failed. Reason: ${e.message}`, e);
     process.exit(1);
 }
 
