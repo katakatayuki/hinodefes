@@ -1,361 +1,288 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 
 // 🚨 【要変更】あなたのRenderサーバーのURLに置き換えてください
 const SERVER_URL = "https://hinodefes.onrender.com"; 
 // 🚨 【要変更】LINE友だち追加QRコード画像のURLに置き換えてください
-const LINE_QR_CODE_URL = 'https://placehold.co/250x250/000000/FFFFFF?text=LINE+QR+CODE'; 
-
-// 注文可能なアイテムリスト
-const ORDER_ITEMS = {
-    '肉まん': 'pork_bun',
-    'ピザまん': 'pizza_bun',
-    'あんまん': 'red_bean_bun',
-    'チョコまん': 'chocolate_bun',
-    '烏龍茶': 'oolong_tea',
-};
-
-// モーダルを管理するためのコンポーネント
-const CustomModal = ({ title, message, children, onClose }) => {
-    return (
-        <div 
-            style={{ 
-                position: 'fixed', 
-                top: 0, 
-                left: 0, 
-                width: '100%', 
-                height: '100%', 
-                backgroundColor: 'rgba(0, 0, 0, 0.5)', 
-                display: 'flex', 
-                justifyContent: 'center', 
-                alignItems: 'center', 
-                zIndex: 1000 
-            }}
-        >
-            <div 
-                style={{ 
-                    backgroundColor: 'white', 
-                    padding: '30px', 
-                    borderRadius: '10px', 
-                    maxWidth: '90%', 
-                    width: '350px', 
-                    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.2)',
-                    textAlign: 'center'
-                }}
-            >
-                <h2 style={{ borderBottom: '2px solid #ccc', paddingBottom: '10px' }}>{title}</h2>
-                <p style={{ margin: '20px 0' }}>{message}</p>
-                {children}
-                <button
-                    onClick={onClose}
-                    style={{ 
-                        padding: '10px 20px', 
-                        backgroundColor: '#007BFF', 
-                        color: 'white', 
-                        border: 'none', 
-                        borderRadius: '4px', 
-                        cursor: 'pointer', 
-                        marginTop: '20px',
-                        width: '100%'
-                    }}
-                >
-                    閉じる
-                </button>
-            </div>
-        </div>
-    );
-};
-
+// Firebase Hostingにアップロードした画像パスを設定
+const LINE_QR_CODE_URL = 'https://hinodefes-57609.web.app/QRCODE.png'; 
 
 export default function Reception() {
-    const [name, setName] = useState('');
-    const [people, setPeople] = useState(1);
-    const [wantsLine, setWantsLine] = useState(false);
-    const [isLoading, setIsLoading] = useState(false);
-    const [error, setError] = useState(null);
+  const [name, setName] = useState('');
+  const [people, setPeople] = useState(1);
+  const [wantsLine, setWantsLine] = useState(false);
+  
+  // 🚨 修正: ローカルストレージを使って初期値を設定
+  const [group, setGroup] = useState(() => {
+      const savedGroup = localStorage.getItem('lastGroup');
+      return savedGroup || '5-5'; // 読み込めない場合は '5-5' を初期値とする
+  });
+
+  // 🚨 追加: グループ選択のロック状態 (デフォルトでロック)
+  const [isGroupLocked, setIsGroupLocked] = useState(true);
+
+  // 予約が成功し、QRコードを表示すべきか
+  const [isReserved, setIsReserved] = useState(false);
+  const [reservedNumber, setReservedNumber] = useState(null);
+  const [items, setItems] = useState({
+    nikuman: 0,
+    pizaman: 0,
+    anman: 0,
+    chocoman: 0,
+    oolongcha: 0,
+  });
+  const [stockLimits, setStockLimits] = useState(null);
+  const [error, setError] = useState('');
+
+  // 🚨 追加: 団体変更時にローカルストレージに保存するハンドラ
+  const handleGroupChange = (newGroup) => {
+      setGroup(newGroup);
+      localStorage.setItem('lastGroup', newGroup);
+  };
+
+  useEffect(() => {
+    // 在庫制限をサーバーから取得する
+    const fetchStockLimits = async () => {
+        try {
+            const response = await fetch(`${SERVER_URL}/api/stock-limits`);
+            if (!response.ok) {
+                throw new Error('在庫情報の取得に失敗しました。');
+            }
+            const data = await response.json();
+            setStockLimits(data);
+        } catch (err) {
+            console.error(err);
+            setError('在庫情報を読み込めませんでした。ページを再読み込みしてください。');
+        }
+    };
+    fetchStockLimits();
+  }, []);
+
+  const handleItemChange = (itemKey, value) => {
+      const numValue = parseInt(value, 10);
+      const limit = stockLimits[itemKey] || 0;
+      
+      if (isNaN(numValue) || numValue < 0) {
+          setItems({ ...items, [itemKey]: 0 });
+      } else if (numValue > limit) {
+          setItems({ ...items, [itemKey]: limit });
+      } else {
+          setItems({ ...items, [itemKey]: numValue });
+      }
+  };
+
+  async function handleSubmit(e) {
+    e.preventDefault();
     
-    // 🚨 修正: ローカルストレージを使って初期値を設定
-    const [group, setGroup] = useState(() => {
-        const savedGroup = localStorage.getItem('lastGroup');
-        return savedGroup || '5-5'; // 読み込めない場合は '5-5' を初期値とする
-    });
-    const [isGroupLocked, setIsGroupLocked] = useState(true);
+    const totalItems = Object.values(items).reduce((sum, count) => sum + count, 0);
+    if (totalItems === 0) {
+        alert('商品を1つ以上選択してください。');
+        return; // ここで処理を中断
+    }
+    
+    // 既存の予約画面に戻す
+    setIsReserved(false); 
+    setReservedNumber(null);
 
-    // 予約が成功し、QRコードを表示すべきか
-    const [isReserved, setIsReserved] = useState(false);
-    const [reservedNumber, setReservedNumber] = useState(null);
-
-    // 🚨 【追加】商品注文の項目と状態 (キーは日本語名、値は数量)
-    const [orders, setOrders] = useState(() => {
-        const initialOrders = {};
-        Object.keys(ORDER_ITEMS).forEach(item => {
-            initialOrders[item] = 0;
+    try {
+        const response = await fetch(`${SERVER_URL}/api/reserve`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            name,
+            people: Number(people),
+            wantsLine,
+            group, // サーバーに団体名（グループ）を送信
+            items, // 商品の注文数を追加
+          }),
         });
-        return initialOrders;
-    });
 
-    const handleOrderChange = useCallback((item, count) => {
-        // 0未満にならないように制限
-        const newCount = Math.max(0, parseInt(count) || 0);  
-        setOrders(prev => ({
-            ...prev,
-            [item]: newCount
-        }));
-    }, []);
+        if (!response.ok) {
+          throw new Error(`API登録に失敗しました: ${response.statusText}`);
+        }
 
-    // 団体変更時にローカルストレージに保存するハンドラ
-    const handleGroupChange = useCallback((newGroup) => {
-        setGroup(newGroup);
-        localStorage.setItem('lastGroup', newGroup);
-    }, []);
+        const result = await response.json();
+        const number = result.number; // サーバーから複合番号（例: "55-1"）が返ってくる
 
-    const resetForm = useCallback(() => {
+        // フォームをリセット (GroupはLocalStorageから読み込んでいるため、ここではリセットしない)
         setName('');
         setPeople(1);
         setWantsLine(false);
-        setOrders(() => {
-            const initialOrders = {};
-            Object.keys(ORDER_ITEMS).forEach(item => {
-                initialOrders[item] = 0;
-            });
-            return initialOrders;
+        setItems({
+            nikuman: 0,
+            pizaman: 0,
+            anman: 0,
+            chocoman: 0,
+            oolongcha: 0,
         });
-    }, []);
-
-    const closeModal = useCallback(() => {
-        setIsReserved(false);
-        setReservedNumber(null);
-        setError(null);
-    }, []);
-
-
-    async function handleSubmit(e) {
-        e.preventDefault();
-        setIsLoading(true); 
-        setError(null);
-        setIsReserved(false); 
-        setReservedNumber(null);
-
-        // 注文が一つもされていないかチェック (今回はチェックなしで0個注文も許容)
-        // const totalItems = Object.values(orders).reduce((sum, count) => sum + count, 0);
-
-        try {
-            const payload = {
-                group: group,
-                name: name,
-                people: parseInt(people),
-                wantsLine: wantsLine,
-                // lineUserId は、フロント側で保持せず、LINEメッセージが来た時にサーバー側で紐付ける方式を採用
-                lineUserId: null, 
-                order: orders, // 🚨 order をペイロードに追加
-            };
-
-            const response = await fetch(`${SERVER_URL}/api/reservations`, { // 🚨 サーバー側のルート名に合わせて修正
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(payload),
-            });
-
-            if (!response.ok) {
-                const errorBody = await response.text();
-                throw new Error(`API登録に失敗しました: ${response.statusText}. 詳細: ${errorBody}`);
-            }
-
-            const result = await response.json();
-            const number = result.number; // サーバーから連番（数値）が返ってくる
-
-            resetForm();
-            
-            // 予約成功後の処理
+        
+        // 予約成功後の処理を条件分岐
+        if (wantsLine) {
+            // LINE通知希望の場合は、QRコード表示画面へ
             setReservedNumber(number);
             setIsReserved(true);
-
-        } catch (error) {
-            console.error(error);
-            setError('登録処理中にエラーが発生しました。サーバーまたはネットワークを確認してください。');
-        } finally {
-            setIsLoading(false);
+            // NOTE: alert()はブラウザ環境では非推奨ですが、カスタムモーダルUIへの変更を推奨します。
+            alert(`登録完了！受付番号は【${number}】番です。\nLINEの友だち追加をしてください。`);
+        } else {
+            // LINE通知不要の場合は、番号をアラートで表示して完了
+            // NOTE: alert()はブラウザ環境では非推奨ですが、カスタムモーダルUIへの変更を推奨します。
+            alert(`登録完了！受付番号は【${number}】番です。`);
         }
-    }
-
-    // 予約完了後のQRコード表示画面 or 予約完了メッセージ
-    if (isReserved && reservedNumber !== null) {
-        const totalItems = Object.values(orders).reduce((sum, count) => sum + count, 0);
         
-        return (
-            <CustomModal 
-                title="登録完了！"
-                message={`受付番号は【${reservedNumber}】番です。`}
-                onClose={closeModal}
-            >
-                <div style={{ textAlign: 'left', border: '1px solid #ddd', padding: '15px', borderRadius: '4px', marginBottom: '20px', backgroundColor: '#f9f9f9' }}>
-                    <h4 style={{ margin: '0 0 10px 0', color: '#333' }}>ご注文内容:</h4>
-                    {totalItems > 0 ? (
-                        Object.entries(orders).filter(([, count]) => count > 0).map(([item, count]) => (
-                            <p key={item} style={{ margin: '5px 0' }}>{item}: {count} 個</p>
-                        ))
-                    ) : (
-                        <p style={{ margin: '5px 0', color: '#999' }}>ご注文はありません</p>
-                    )}
-                </div>
-                {wantsLine && (
-                    <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#e6f7ff', border: '1px solid #b3e0ff', borderRadius: '4px' }}>
-                        <h3 style={{ margin: '0 0 10px 0', color: '#007BFF' }}>LINE通知設定</h3>
-                        <p style={{ fontSize: '0.9em' }}>準備完了の通知を受け取るため、以下のQRコードをLINEで読み取り、**友だち追加**してください。</p>
-                        <img 
-                            src={LINE_QR_CODE_URL} 
-                            alt="LINE友だち追加QRコード" 
-                            style={{ width: '150px', height: '150px', border: '1px solid #ccc', margin: '15px 0' }} 
-                        />
-                    </div>
-                )}
-            </CustomModal>
-        );
+
+    } catch (error) {
+      console.error(error);
+      // NOTE: alert()はブラウザ環境では非推奨ですが、カスタムモーダルUIへの変更を推奨します。
+      alert('登録処理中にエラーが発生しました。サーバーまたはネットワークを確認してください。');
     }
-    
-    // エラーモーダル
-    if (error) {
-        return (
-            <CustomModal 
-                title="エラー"
-                message={error}
-                onClose={closeModal}
+  }
+
+  // 予約完了後のQRコード表示画面
+  if (isReserved && reservedNumber !== null) {
+      return (
+          <div style={{ padding: '20px', maxWidth: '400px', margin: 'auto', textAlign: 'center' }}>
+            <h1>登録完了！</h1>
+            <h2>受付番号: <span style={{ color: 'red', fontSize: '2em' }}>{reservedNumber}</span> 番</h2>
+            
+            <h3 style={{ marginTop: '30px' }}>LINE通知設定</h3>
+            <p>準備完了の通知を受け取るため、以下のQRコードをLINEで読み取り、**友だち追加**してください。</p>
+            
+            <img 
+                src={LINE_QR_CODE_URL} 
+                alt="LINE友だち追加QRコード" 
+                style={{ width: '250px', height: '250px', border: '1px solid #ccc', margin: '20px 0' }} 
             />
-        );
-    }
+            
+            <button
+                onClick={() => setIsReserved(false)}
+                style={{ padding: '10px 20px', backgroundColor: '#333', color: 'white', border: 'none', cursor: 'pointer', marginTop: '20px', borderRadius: '4px' }}
+            >
+                受付画面に戻る
+            </button>
+          </div>
+      );
+  }
 
-    // 通常の受付フォーム
-    return (
-        <div style={{ padding: '20px', maxWidth: '450px', margin: 'auto' }}>
-            <h1 style={{ textAlign: 'center', color: '#333' }}>受付フォーム</h1>
-            {isLoading && (
-                <div style={{ textAlign: 'center', padding: '15px', backgroundColor: '#fffbe6', border: '1px solid #ffe58f', borderRadius: '4px', marginBottom: '20px' }}>
-                    登録中...
-                </div>
-            )}
-            <form onSubmit={handleSubmit} style={{ border: '1px solid #ddd', padding: '20px', borderRadius: '8px', boxShadow: '0 2px 5px rgba(0,0,0,0.1)' }}>
-                
-                {/* 団体選択 */}
-                <div style={{ marginBottom: '15px' }}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                        <label style={{ flexGrow: 1, color: '#555' }}>
-                            団体を選択：
-                            <select
-                                value={group}
-                                onChange={(e) => handleGroupChange(e.target.value)} 
-                                required
-                                disabled={isGroupLocked || isLoading} 
-                                style={{ width: '100%', padding: '10px', boxSizing: 'border-box', border: '1px solid #ccc', borderRadius: '4px', marginTop: '5px', fontSize: '1em' }}
-                            >
-                                <option value="5-5">団体 5-5</option>
-                                <option value="5-2">団体 5-2</option>
-                            </select>
-                        </label>
-                        <button
-                            type="button"
-                            onClick={() => setIsGroupLocked(!isGroupLocked)} 
-                            disabled={isLoading}
-                            style={{
-                                padding: '10px 12px',
-                                cursor: 'pointer',
-                                backgroundColor: isGroupLocked ? '#f44336' : '#4CAF50', 
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '4px',
-                                marginTop: '28px', 
-                                whiteSpace: 'nowrap',
-                                transition: 'background-color 0.3s'
-                            }}
-                        >
-                            {isGroupLocked ? '🔓 ロック解除' : '🔒 ロック中'}
-                        </button>
-                    </div>
-                </div>
-                
-                {/* 名前 */}
-                <div style={{ marginBottom: '15px' }}>
-                    <label style={{ display: 'block', color: '#555' }}>
-                        代表者名：
-                        <input
-                            type="text"
-                            value={name}
-                            onChange={(e) => setName(e.target.value)}
-                            required
-                            disabled={isLoading}
-                            style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '4px', marginTop: '5px', fontSize: '1em' }}
-                        />
-                    </label>
-                </div>
-                
-                {/* 人数 */}
-                <div style={{ marginBottom: '20px' }}>
-                    <label style={{ display: 'block', color: '#555' }}>
-                        人数：
-                        <input
-                            type="number"
-                            value={people}
-                            min={1}
-                            onChange={(e) => setPeople(e.target.value)}
-                            required
-                            disabled={isLoading}
-                            style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '4px', marginTop: '5px', fontSize: '1em' }}
-                        />
-                    </label>
-                </div>
-
-                {/* 🚨 商品注文セクション */}
-                <div style={{ marginBottom: '25px', padding: '15px', border: '1px solid #e0e0e0', borderRadius: '4px', backgroundColor: '#f7f7f7' }}>
-                    <h3 style={{ marginTop: '0', color: '#333', borderBottom: '1px dashed #ccc', paddingBottom: '10px', marginBottom: '15px' }}>ご注文</h3>
-                    {Object.keys(ORDER_ITEMS).map((item) => (
-                        <div key={item} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                            <label style={{ color: '#555', flexGrow: 1 }}>{item}</label>
-                            <input
-                                type="number"
-                                value={orders[item]}
-                                min={0}
-                                onChange={(e) => handleOrderChange(item, e.target.value)}
-                                disabled={isLoading}
-                                style={{ width: '80px', padding: '8px', border: '1px solid #ccc', borderRadius: '4px', textAlign: 'center' }}
-                            />
-                        </div>
-                    ))}
-                </div>
-                
-                {/* LINE通知希望 */}
-                <div style={{ marginBottom: '25px', textAlign: 'center' }}>
-                    <label style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', fontSize: '1.1em', color: '#007BFF', fontWeight: 'bold' }}>
-                        <input
-                            type="checkbox"
-                            checked={wantsLine}
-                            onChange={(e) => setWantsLine(e.target.checked)}
-                            disabled={isLoading}
-                            style={{ marginRight: '10px', width: '20px', height: '20px' }}
-                        />
-                        LINEで通知希望
-                    </label>
-                </div>
-                
-                {/* 登録ボタン */}
+  // 通常の受付フォーム
+  return (
+    <div style={{ padding: '20px', maxWidth: '400px', margin: 'auto' }}>
+      <h1>受付</h1>
+      <form onSubmit={handleSubmit}>
+        
+        {/* 🚨 修正: 団体選択ドロップダウンとロックボタン */}
+        <div style={{ marginBottom: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                <label style={{ flexGrow: 1 }}>
+                    団体を選択：
+                    <select
+                        value={group}
+                        onChange={(e) => handleGroupChange(e.target.value)} // 🚨 修正: 専用ハンドラを使用
+                        required
+                        disabled={isGroupLocked} // 🚨 ロック状態に応じて無効化
+                        style={{ width: '100%', padding: '8px', boxSizing: 'border-box', border: '1px solid #ccc', borderRadius: '4px' }}
+                    >
+                        <option value="5-5">団体 5-5</option>
+                        <option value="5-2">団体 5-2</option>
+                    </select>
+                </label>
                 <button
-                    type="submit"
-                    disabled={isLoading}
-                    style={{ 
-                        padding: '12px 20px', 
-                        backgroundColor: isLoading ? '#ccc' : '#4CAF50', 
-                        color: 'white', 
-                        border: 'none', 
-                        cursor: isLoading ? 'not-allowed' : 'pointer', 
-                        borderRadius: '4px', 
-                        width: '100%',
-                        fontSize: '1.2em',
-                        fontWeight: 'bold',
-                        transition: 'background-color 0.3s'
+                    type="button"
+                    onClick={() => setIsGroupLocked(!isGroupLocked)} // 🚨 ボタンでロックを切り替え
+                    style={{
+                        padding: '8px 12px',
+                        cursor: 'pointer',
+                        backgroundColor: isGroupLocked ? '#f44336' : '#4CAF50', // ロック状態で色を変える
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        marginTop: '23px', // ラベルと入力欄の間に合うように調整
+                        whiteSpace: 'nowrap'
                     }}
                 >
-                    {isLoading ? '登録中...' : '受付を登録する'}
+                    {isGroupLocked ? '🔓 ロック解除' : '🔒 ロック中'}
                 </button>
-            </form>
+            </div>
         </div>
-    );
+        
+        {/* 商品入力セクション */}
+        <div style={{ marginBottom: '15px', border: '1px solid #eee', padding: '10px', borderRadius: '4px' }}>
+            <h4 style={{ marginTop: 0 }}>ご注文内容</h4>
+            {error && <p style={{ color: 'red' }}>{error}</p>}
+            {stockLimits ? (
+                <div>
+                    {[
+                        { key: 'nikuman', name: '肉まん' },
+                        { key: 'pizaman', name: 'ピザまん' },
+                        { key: 'anman', name: 'あんまん' },
+                        { key: 'chocoman', name: 'チョコまん' },
+                        { key: 'oolongcha', name: '烏龍茶' },
+                    ].map(({ key, name }) => {
+                        const limit = stockLimits[key] || 0;
+                        return (
+                            <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                <label htmlFor={key}>{name} (最大: {limit}個)</label>
+                                <input
+                                    id={key}
+                                    type="number"
+                                    min="0"
+                                    max={limit}
+                                    value={items[key]}
+                                    onChange={(e) => handleItemChange(key, e.target.value)}
+                                    style={{ width: '80px', padding: '5px', textAlign: 'right', border: '1px solid #ccc', borderRadius: '4px' }}
+                                    disabled={limit === 0 || !stockLimits}
+                                />
+                            </div>
+                        );
+                    })}
+                </div>
+            ) : (
+                <p>在庫情報を読み込み中...</p>
+            )}
+        </div>
+
+        <div style={{ marginBottom: '10px' }}>
+          <label>
+            名前：
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              style={{ width: '100%', padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }}
+            />
+          </label>
+        </div>
+        <div style={{ marginBottom: '10px' }}>
+          <label>
+            人数：
+            <input
+              type="number"
+              value={people}
+              min={1}
+              onChange={(e) => setPeople(e.target.value)}
+              style={{ width: '100%', padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }}
+            />
+          </label>
+        </div>
+        <div style={{ marginBottom: '20px' }}>
+          <label>
+            <input
+              type="checkbox"
+              checked={wantsLine}
+              onChange={(e) => setWantsLine(e.target.checked)}
+              style={{ marginRight: '8px' }}
+            />
+            LINEで通知希望
+          </label>
+        </div>
+        <button
+          type="submit"
+          style={{ padding: '10px 20px', backgroundColor: '#4CAF50', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '4px' }}
+        >
+          登録
+        </button>
+      </form>
+    </div>
+  );
 }
