@@ -31,6 +31,38 @@ try {
 const db = admin.firestore();
 const COUNTER_DOC = 'settings/counters';
 
+// server.js の任意の場所に追加
+
+// ==========================================================
+// GET /api/stock-limits: 在庫制限の取得
+// ==========================================================
+app.get('/api/stock-limits', async (req, res) => {
+    try {
+        // Firestoreから在庫制限ドキュメントを取得
+        // パス: 'settings/stockLimits'
+        const stockDoc = await db.doc('settings/stockLimits').get(); 
+
+        if (!stockDoc.exists) {
+            // ドキュメントがない場合、全て0のデータを返す
+            return res.json({
+                nikuman: 0,
+                pizaman: 0,
+                anman: 0,
+                chocoman: 0,
+                oolongcha: 0,
+            });
+        }
+        
+        // Firestoreから取得したデータをそのままクライアントに返す
+        // (キーが Reception.js と一致している前提)
+        res.json(stockDoc.data());
+
+    } catch (e) {
+        console.error("Error fetching stock limits:", e);
+        res.status(500).json({ error: "Failed to fetch stock limits" });
+    }
+});
+
 // ==========================================================
 // LINE Push/Reply Utility (エラーログ強化版)
 // ==========================================================
