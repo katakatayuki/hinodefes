@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 
-// あなたのRenderサービスのURLに置き換える
+// あなたのRenderサービスのURL置き換える
 const API_BASE_URL = 'https://hinodefes.onrender.com';
 
 export default function TVDisplay() {
