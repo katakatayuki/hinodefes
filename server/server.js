@@ -6,7 +6,6 @@ const fetch = require('node-fetch');
 const app = express();
 
 
-const db = admin.firestore();
 const COUNTER_DOC = 'settings/counters';
 // 🚨 【追加】販売実績ドキュメントのパス
 const SALES_STATS_DOC = 'settings/salesStats'; 
