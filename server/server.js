@@ -5,6 +5,11 @@ const fetch = require('node-fetch');
 
 const app = express();
 
+const SALES_STATS_DOC = 'settings/salesStats';
+const WAITING_SUMMARY_DOC = 'summary/waiting'; // 待ち状況サマリー
+
+
+
 // ==========================================================
 // サーバー設定
 // ==========================================================
@@ -50,48 +55,33 @@ const COUNTER_DOC = 'settings/counters';
 // server.js の任意の場所に追加
 
 // server.js のどこかにある、GET /api/stock-limits ルート全体を以下のコードに置き換えてください。
-
 // ==========================================================
-// GET /api/stock-limits: 残り在庫数の計算と取得
+// 🚨 【維持】/api/stock-limits: 在庫数は受付画面で必要なため維持
 // ==========================================================
 app.get('/api/stock-limits', async (req, res) => {
     try {
-        // 1. 最大販売数 (Stock Limits) と 販売実績 (Sales Stats) の両方のドキュメントを取得
         const [stockDoc, salesDoc] = await Promise.all([
-            db.doc('settings/stockLimits').get(), 
-            db.doc('settings/salesStats').get() 
+            db.doc('settings/stockLimits').get(),
+            db.doc(SALES_STATS_DOC).get()
         ]);
-        
-        // データの初期値（ドキュメントが存在しない場合を考慮）
+
         const maxLimits = stockDoc.exists ? stockDoc.data() : {};
         const salesStats = salesDoc.exists ? salesDoc.data() : {};
-
-        // クライアント (Reception.js) が期待する全商品キーのリスト
         const itemKeys = ['nikuman', 'pizaman', 'anman', 'chocoman', 'oolongcha'];
 
-        // 2. 残り在庫数を計算
         const remainingStock = {};
-        
         itemKeys.forEach(key => {
-            // 最大販売数 - 販売実績 を計算
             const max = maxLimits[key] || 0;
             const sold = salesStats[key] || 0;
-            
-            // 残り在庫数は 0 未満にならないように Math.max(0, ...) で制限
             remainingStock[key] = Math.max(0, max - sold);
         });
 
-        // 3. クライアントに残りの在庫数データを返す
         res.json(remainingStock);
-
     } catch (e) {
         console.error("Error fetching remaining stock limits:", e);
         res.status(500).json({ error: "Failed to fetch stock limits" });
     }
 });
-
-// server.js の任意の場所（例：既存のAPIルート群の最後など）に追加
-
 // ==========================================================
 // GET /api/sales-stats: 販売実績の取得 (Admin.jsが使用)
 // ==========================================================
@@ -285,144 +275,177 @@ async function processLineWebhookEvents(events, db) {
     }
 }
 
-// ==========================================================
-// POST /api/reserve (予約登録) - 商品注文項目を追加＆販売実績を更新
-// ==========================================================
+/ ==========================================================// POST /api/reserve (予約登録) - 🚨 待ち状況サマリーの更新を追加// ==========================================================
+
 app.post('/api/reserve', async (req, res) => {
-    // ⚠ 注意: admin, db, COUNTER_DOC, SALES_STATS_DOC がスコープ内で定義されていることを前提とする
+
     const userData = req.body;
+
     const { group, name, people } = userData;
 
+
+
     if (!group || !name || !people) {
+
         return res.status(400).send("Missing required fields: group, name, or people.");
+
     }
 
+
+
     try {
-        // トランザクション内で在庫チェック、カウンター更新、販売実績更新、予約登録を行う
+
         const result = await db.runTransaction(async (t) => {
-            
-            // 0. 在庫制限ドキュメントを取得し、注文を検証
+
             const stockLimitsRef = db.doc('settings/stockLimits');
+
             const stockLimitsSnap = await t.get(stockLimitsRef);
-            if (!stockLimitsSnap.exists) {
-                // エラーをスローするとトランザクションがロールバックされる
-                throw new Error("Stock limits setting is not found."); 
-            }
+
+            if (!stockLimitsSnap.exists) throw new Error("Stock limits setting is not found.");
+
             const stockLimits = stockLimitsSnap.data();
 
-            // 注文内容を検証
+
+
             if (!userData.items || typeof userData.items !== 'object' || Object.keys(userData.items).length === 0) {
-                // itemsが不正または空の場合、在庫チェックをスキップするためにここでエラーにする
+
                 throw new Error("Items data is invalid or missing.");
+
             }
+
+
+
+            const salesStatsSnap = await t.get(db.doc(SALES_STATS_DOC));
+
+            const salesStats = salesStatsSnap.exists ? salesStatsSnap.data() : {};
+
+
+
             for (const itemKey in userData.items) {
-                const orderedAmount = parseInt(userData.items[itemKey], 10);
-                const limit = stockLimits[itemKey] || 0; // 制限がない場合は0とする
-                if (orderedAmount > limit) {
-                    throw new Error(`Order for ${itemKey} (${orderedAmount}) exceeds the limit (${limit}).`);
+
+                const orderedAmount = userData.items[itemKey];
+
+                const soldAmount = salesStats[itemKey] || 0;
+
+                const maxLimit = stockLimits[itemKey] || 0;
+
+                if (soldAmount + orderedAmount > maxLimit) {
+
+                    throw new Error(`Order for ${itemKey} exceeds stock limit.`);
+
                 }
+
             }
-            
-            // 1. 団体別カウンターを取得し、連番を採番
+
+
+
             const counterRef = db.doc(COUNTER_DOC);
+
             const counterDoc = await t.get(counterRef);
-            
+
             let currentNumber = 1;
+
             const currentCounters = counterDoc.exists ? counterDoc.data() : {};
-            const groupCounterKey = group.replace(/[^a-zA-Z0-9]/g, ''); // フィールドキーとして安全なものに変換
+
+            const groupCounterKey = group.replace(/[^a-zA-Z0-9]/g, '');
 
             if (currentCounters[groupCounterKey]) {
-                // updatedAtフィールドがない場合を考慮し、存在チェックを行う
-                const lastUpdatedTimestamp = currentCounters[groupCounterKey].updatedAt;
-                
-                if (lastUpdatedTimestamp) {
-                    const lastUpdated = lastUpdatedTimestamp.toDate();
-                    const now = new Date();
-                    const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
 
-                    if (now.getTime() - lastUpdated.getTime() > TWELVE_HOURS_MS) {
-                        currentNumber = 1; 
-                    } else {
-                        currentNumber = currentCounters[groupCounterKey].currentNumber + 1;
-                    }
-                } else {
-                    // updatedAtがない場合もリセットせず、インクリメントする
-                    currentNumber = currentCounters[groupCounterKey].currentNumber + 1;
-                }
+                currentNumber = (currentCounters[groupCounterKey].currentNumber || 0) + 1;
+
             }
-            const nextNumber = currentNumber; // 採番された次の番号
 
-            // 2. カウンターを更新
+            const nextNumber = currentNumber;
+
             t.update(counterRef, {
-                [groupCounterKey]: { 
-                    currentNumber: nextNumber, 
-                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                }
+
+                [`${groupCounterKey}.currentNumber`]: nextNumber,
+
+                [`${groupCounterKey}.updatedAt`]: admin.firestore.FieldValue.serverTimestamp()
+
             });
 
-            // 3. 販売実績 (salesStats) の更新ロジック
-            const salesStatsRef = db.doc(SALES_STATS_DOC);
-            const salesUpdate = {};
 
-            // 注文内容 (userData.items) を処理し、加算するオブジェクトを作成
-            for (const key in userData.items) {
-                const count = parseInt(userData.items[key], 10);
-                // 注文数が1個以上の場合のみ更新対象とする
-                if (count > 0) {
-                    // Firestoreの FieldValue.increment を使用して、安全に数値を加算
-                    salesUpdate[key] = admin.firestore.FieldValue.increment(count);
+
+            const summaryRef = db.doc(WAITING_SUMMARY_DOC);
+
+            const peopleCount = parseInt(people, 10) || 1;
+
+            const groupUpdateKey = group.replace('-', '_');
+
+
+
+            t.set(summaryRef, {
+
+                [groupUpdateKey]: {
+
+                    groups: admin.firestore.FieldValue.increment(1),
+
+                    people: admin.firestore.FieldValue.increment(peopleCount)
+
                 }
-            }
 
-            // 更新対象の商品があれば、salesStatsドキュメントを更新
-            if (Object.keys(salesUpdate).length > 0) {
-                t.set(salesStatsRef, salesUpdate, { merge: true });
-            }
-            
-            // 4. 予約ドキュメントを作成
+            }, { merge: true });
+
+
+
             const newReservationRef = db.collection('reservations').doc();
-            
-            const groupPrefix = group.replace('-', '');
-            const fullReservationNumber = `${groupPrefix}-${nextNumber}`; 
-            
+
+            const fullReservationNumber = `${group.replace('-', '')}-${nextNumber}`;
+
             const reservationData = {
-                name: userData.name, 
-                people: parseInt(userData.people, 10), 
+
+                name: userData.name,
+
+                people: peopleCount,
+
                 wantsLine: !!userData.wantsLine,
+
                 lineUserId: userData.lineUserId || null,
-                group: userData.group, 
+
+                group: userData.group,
+
                 number: fullReservationNumber,
+
                 status: 'waiting',
+
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                calledAt: null,
-                seatEnterAt: null,
-                notes: userData.notes || "",
-                items: userData.items || {}, // 注文内容を追加
+
+                items: userData.items || {},
+
             };
-            
+
             t.set(newReservationRef, reservationData);
 
-            return { success: true, number: fullReservationNumber, id: newReservationRef.id }; 
+
+
+            return { success: true, number: fullReservationNumber, id: newReservationRef.id };
+
         });
+
+
 
         res.json(result);
 
+
+
     } catch (e) {
-        // エラーハンドリング
+
         console.error("Reservation registration failed:", e.message);
-        // 在庫切れなどの具体的なエラーメッセージをクライアントに返す
-        if (e.message.includes("exceeds the limit")) {
+
+        if (e.message.includes("exceeds stock limit")) {
+
             return res.status(400).send("注文数が在庫上限を超えています。");
+
         }
-        if (e.message.includes("is invalid or missing")) {
-             return res.status(400).send("商品注文データが不正または不足しています。");
-        }
-        if (e.message.includes("Stock limits setting is not found")) {
-            return res.status(500).send("サーバーの設定に問題があります。");
-        }
+
         res.status(500).send("サーバーエラーにより登録に失敗しました。");
+
     }
-});
+
+});  
+
+
 // ==========================================================
 // POST /api/line-webhook: LINEからのイベント処理 (即時応答を確保)
 // ==========================================================
@@ -656,7 +679,131 @@ app.delete('/api/reservations/:id', async (req, res) => {
     }
 });
 
+// ==========================================================
+// POST /api/reservations/:id/status: 🚨 集計ロジックをここに追加
+// ==========================================================
+app.post('/api/reservations/:id/status', async (req, res) => {
+    if (req.body.apiSecret !== process.env.API_SECRET) return res.status(403).send('forbidden');
 
+    const { id } = req.params;
+    const { status: newStatus } = req.body;
+
+    if (!id || !newStatus) return res.status(400).send('Invalid request.');
+
+    const docRef = db.collection('reservations').doc(id);
+
+    try {
+        await db.runTransaction(async t => {
+            const docSnap = await t.get(docRef);
+            if (!docSnap.exists) throw new Error("Reservation not found.");
+
+            const reservationData = docSnap.data();
+            const oldStatus = reservationData.status;
+
+            if (oldStatus !== newStatus) {
+                const groupKey = reservationData.group.replace('-', '_');
+                const peopleCount = reservationData.people || 1;
+                const summaryRef = db.doc(WAITING_SUMMARY_DOC);
+
+                if (oldStatus === 'waiting') {
+                    t.set(summaryRef, {
+                        [groupKey]: {
+                            groups: admin.firestore.FieldValue.increment(-1),
+                            people: admin.firestore.FieldValue.increment(-peopleCount)
+                        }
+                    }, { merge: true });
+                }
+
+                if (newStatus === 'completed' || newStatus === 'seatEnter') {
+                    const salesRef = db.doc(SALES_STATS_DOC);
+                    const items = reservationData.items || {};
+                    const salesUpdate = {};
+                    for (const key in items) {
+                        if (items[key] > 0) {
+                            salesUpdate[key] = admin.firestore.FieldValue.increment(items[key]);
+                        }
+                    }
+                    if (Object.keys(salesUpdate).length > 0) {
+                        t.set(salesRef, salesUpdate, { merge: true });
+                    }
+                }
+            }
+
+            const updatePayload = { status: newStatus };
+            if (newStatus === 'called') updatePayload.calledAt = admin.firestore.FieldValue.serverTimestamp();
+            if (newStatus === 'completed') updatePayload.completedAt = admin.firestore.FieldValue.serverTimestamp();
+
+            t.update(docRef, updatePayload);
+        });
+
+        const reservationSnap = await docRef.get();
+        const reservationData = reservationSnap.data();
+
+        if (newStatus === 'called') {
+            const tvRef = db.doc('tv/state');
+            await db.runTransaction(async t => {
+                const tvSnap = await t.get(tvRef);
+                const currentCalled = tvSnap.exists ? (tvSnap.data().currentCalled || []) : [];
+                const newCalledSet = new Set([...currentCalled, reservationData.number]);
+                t.set(tvRef, { currentCalled: Array.from(newCalledSet), updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+            });
+
+            if (reservationData.wantsLine && reservationData.lineUserId) {
+                const text = `ご準備ができました。番号 ${reservationData.number} さん、受付へお戻りください。`;
+                sendLinePush(reservationData.lineUserId, text).catch(e => console.error(e));
+            }
+        }
+
+        res.json({ success: true, id, newStatus });
+    } catch (e) {
+        console.error(`Failed to update status for ${id}:`, e);
+        res.status(500).send("Failed to update status.");
+    }
+});
+
+
+// ==========================================================
+// DELETE /api/reservations/:id: 🚨 集計ロジックを追加
+// ==========================================================
+app.delete('/api/reservations/:id', async (req, res) => {
+    if (!req.body.apiSecret || req.body.apiSecret !== process.env.API_SECRET) {
+      return res.status(403).send('forbidden');
+    }
+
+    const { id } = req.params;
+    if (!id) return res.status(400).send('Invalid request (id missing).');
+
+    const docRef = db.collection('reservations').doc(id);
+
+    try {
+        await db.runTransaction(async t => {
+            const docSnap = await t.get(docRef);
+            if (!docSnap.exists) return;
+
+            const reservationData = docSnap.data();
+
+            if (reservationData.status === 'waiting') {
+                const summaryRef = db.doc(WAITING_SUMMARY_DOC);
+                const groupKey = reservationData.group.replace('-', '_');
+                const peopleCount = reservationData.people || 1;
+
+                t.set(summaryRef, {
+                    [groupKey]: {
+                        groups: admin.firestore.FieldValue.increment(-1),
+                        people: admin.firestore.FieldValue.increment(-peopleCount)
+                    }
+                }, { merge: true });
+            }
+
+            t.delete(docRef);
+        });
+
+        res.json({ success: true, id });
+    } catch (e) {
+        console.error(`Failed to delete reservation ${id}:`, e);
+        res.status(500).send("Failed to delete reservation.");
+    }
+});
 // サーバーの待ち受け開始
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=> console.log(`Server is running on port ${PORT}`));
