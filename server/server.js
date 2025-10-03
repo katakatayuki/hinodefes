@@ -6,7 +6,7 @@ const fetch = require('node-fetch');
 const app = express();
 
 const SALES_STATS_DOC = 'settings/salesStats';
-const WAITING_SUMMARY_DOC = 'summary/waiting'; // 待ち状況サマリー
+const WAITING_SUMMARY_DOC = 'summary/waiting'; // 待ち状況サマー
 
 
 
