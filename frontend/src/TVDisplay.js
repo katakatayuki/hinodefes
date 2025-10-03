@@ -11,10 +11,13 @@ import { setLogLevel } from 'firebase/firestore'; // ログレベル設定
 
 // グローバル変数から設定を取得 (no-undefエラー対策済み)
 //const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
 const firebaseConfig = process.env.REACT_APP_FIREBASE_CONFIG ? JSON.parse(process.env.REACT_APP_FIREBASE_CONFIG) : {};
+
+
 //const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-const initialAuthToken = null; // 通常、環境変数からは読み込まないのでnullで十分
+const initialAuthToken = null; // グローバル変数への依存を排除
 
 
 // 待ち状況を計算するための対象グループ
