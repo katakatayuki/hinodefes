@@ -1,247 +1,701 @@
-/* global __firebase_config, __initial_auth_token */
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
 // ====================================================================
-// 🔥 修正点: Firebaseのインポートと初期化をこのファイルに統合
+// Firebase/API インポート
 // ====================================================================
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, signInWithCustomToken, signInAnonymously } from 'firebase/auth';
-import { getFirestore, collection, query, onSnapshot, where, orderBy } from "firebase/firestore";
-import { setLogLevel } from 'firebase/firestore'; // ログレベル設定
+import { getFirestore, collection, query, onSnapshot, doc, updateDoc, orderBy } from "firebase/firestore";
+import { setLogLevel } from 'firebase/firestore';
 
-// グローバル変数から設定を取得
-// 🚨 Linterエラーを避けるため、typeofチェックはそのまま維持します。
-//const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+// 🚨 【要変更】あなたのRenderサーバーのURLに置き換えてください
+const API_BASE_URL = 'https://hinodefes.onrender.com';
+
+// --------------------------------------------------------------------------------
+// Firebase設定の読み込み
+// --------------------------------------------------------------------------------
 const firebaseConfig = process.env.REACT_APP_FIREBASE_CONFIG ? JSON.parse(process.env.REACT_APP_FIREBASE_CONFIG) : {};
-//const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-const initialAuthToken = null; // 通常、環境変数からは読み込まないのでnullで十分
+const initialAuthToken = null;
+const initialAppId = firebaseConfig.appId || 'default-app-id';
 
+// 管理者トークン (🚨 【要変更】Admin認証に使用するシークレットなトークンに置き換えてください)
+const ADMIN_CUSTOM_AUTH_TOKEN = "your-admin-custom-token-here";
 
-// 待ち状況を計算するための対象グループ
-const AVAILABLE_GROUPS = ['5-5', '5-2'];
+// --------------------------------------------------------------------------------
+// スタイル定義 (Tailwind CSSの代わりにインラインスタイルを使用)
+// --------------------------------------------------------------------------------
 
-export default function TVDisplay() {
-  // Firebaseの初期化状態とインスタンス
-  const [db, setDb] = useState(null);
-  const [auth, setAuth] = useState(null);
-  
-  // 呼び出し中の番号の状態
-  const [calledNumbers, setCalledNumbers] = useState([]);
-  
-  // 待ち状況のサマリーの状態
-  const [waitingSummary, setWaitingSummary] = useState({ 
-    '5-5': { groups: 0, people: 0 }, 
-    '5-2': { groups: 0, people: 0 } 
-  });
-
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  // 1. Firebaseの初期化と認証
-  useEffect(() => {
-    if (!Object.keys(firebaseConfig).length) {
-      setError("Firebase設定が見つかりません。");
-      setLoading(false);
-      return;
+const styles = {
+    screenContainer: {
+        minHeight: '100vh',
+        backgroundColor: '#f3f4f6', // gray-100
+        padding: '32px', // p-8
+    },
+    maxContainer: {
+        maxWidth: '1280px', // max-w-7xl
+        margin: '0 auto',
+    },
+    header: {
+        fontSize: '32px', // text-4xl (少し小さめに調整)
+        fontWeight: '800', // font-extrabold
+        color: '#1f2937', // text-gray-900
+        marginBottom: '24px', // mb-6
+        borderBottom: '4px solid #f59e0b', // border-b-4 border-yellow-500
+        paddingBottom: '8px', // pb-2
+    },
+    cardGrid: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+        gap: '24px', // gap-6
+        marginBottom: '32px', // mb-8
+    },
+    panel: {
+        backgroundColor: 'white',
+        boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)', // shadow-xl
+        borderRadius: '12px', // rounded-xl
+        padding: '24px', // p-6
+    },
+    listTitle: {
+        fontSize: '24px', // text-2xl
+        fontWeight: 'bold',
+        color: '#1f2937', // text-gray-800
+        marginBottom: '16px', // mb-4
+        borderBottom: '1px solid #e5e7eb', // border-b
+        paddingBottom: '8px', // pb-2
+    },
+    listItem: {
+        padding: '16px', // p-4
+        border: '1px solid #d1d5db', // border
+        borderRadius: '8px', // rounded-lg
+        boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)', // shadow-sm
+        backgroundColor: '#f9fafb', // bg-gray-50
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        marginBottom: '12px',
+    },
+    statusTagBase: {
+        padding: '4px 12px', // px-3 py-1
+        fontSize: '12px', // text-sm
+        fontWeight: '600', // font-semibold
+        borderRadius: '9999px', // rounded-full
+        border: '1px solid',
+    },
+    // デバッグ画面用スタイル
+    errorContainer: {
+        minHeight: '100vh',
+        backgroundColor: '#fef2f2', // bg-red-50
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '24px',
+    },
+    errorBox: {
+        padding: '32px',
+        backgroundColor: 'white',
+        borderRadius: '12px',
+        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', // shadow-2xl
+        border: '4px solid #ef4444', // border-red-500
+        maxWidth: '512px', // max-w-lg
     }
-
-    try {
-      const app = initializeApp(firebaseConfig);
-      const firestore = getFirestore(app);
-      const authentication = getAuth(app);
-      
-      // デバッグログを有効にする（任意）
-      setLogLevel('debug'); 
-
-      const authenticate = async () => {
-        try {
-          if (initialAuthToken) {
-            await signInWithCustomToken(authentication, initialAuthToken);
-          } else {
-            // トークンがない場合は匿名認証で続行（表示専用のため）
-            await signInAnonymously(authentication);
-          }
-          setDb(firestore);
-          setAuth(authentication);
-          // 認証が完了しても、データ購読が完了するまでloadingをtrueに保つため、ここではfalseにしない
-        } catch (e) {
-          console.error("Firebase認証エラー:", e);
-          setError("認証に失敗しました。");
-          setLoading(false);
-        }
-      };
-      
-      authenticate();
-
-    } catch (e) {
-      console.error("Firebase初期化エラー:", e);
-      setError("Firebaseの初期化に失敗しました。");
-      setLoading(false);
-    }
-  }, []);
-
-  // 2. onSnapshotによるリアルタイム購読
-  useEffect(() => {
-    if (!db) return; // DBインスタンスが準備できていなければ何もしない
-    
-    // データ購読開始時にloadingを再セット（認証完了時にloadingを解除しなかったため、ここでは不要だが念のため）
-    if (!loading) setLoading(true); 
-
-    // TV表示に必要な全ての予約データを取得するクエリ
-    const reservationsQuery = query(
-        collection(db, "reservations"),
-        where('status', 'in', ['waiting', 'called']),
-        orderBy("number", "asc")
-    );
-
-    // onSnapshotでリアルタイム購読を開始
-    const unsubscribe = onSnapshot(reservationsQuery, (snapshot) => {
-      let currentCalled = [];
-      let summary = AVAILABLE_GROUPS.reduce((acc, group) => {
-          acc[group] = { groups: 0, people: 0 };
-          return acc;
-      }, {});
-
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        
-        // 1. 呼び出し中の番号を収集
-        if (data.status === 'called') {
-          currentCalled.push({ number: data.number, group: data.group });
-        }
-        
-        // 2. 待ち状況のサマリーを計算
-        if (data.status === 'waiting' && AVAILABLE_GROUPS.includes(data.group)) {
-          summary[data.group].groups += 1;
-          summary[data.group].people += data.people;
-        }
-      });
-
-      setCalledNumbers(currentCalled.map(c => c.number));
-      setWaitingSummary(summary);
-      setLoading(false); // データ取得が完了したらloadingを解除
-      
-    }, (err) => {
-      // リスニング失敗時のエラーハンドリング
-      console.error("Firestoreリスニングエラー:", err);
-      setError("データ取得に失敗しました。");
-      setLoading(false);
-    });
-
-    // クリーンアップ関数
-    return () => unsubscribe();
-  }, [db]); // dbインスタンスがセットされたら実行
-
-  // --------------------------------------------------------------------------------
-  // useMemoはフックのルールに従い、常にトップレベルで呼び出されます
-  // --------------------------------------------------------------------------------
-  const getStatusMessage = useMemo(() => {
-    if (calledNumbers.length > 0) {
-      return `現在の呼び出し番号: ${calledNumbers.join(', ')}`;
-    }
-    const totalWaitingGroups = AVAILABLE_GROUPS.reduce((sum, group) => sum + waitingSummary[group].groups, 0);
-    if (totalWaitingGroups > 0) {
-        // 待っているグループが存在する場合
-        return `現在 ${totalWaitingGroups} グループが待機中です。`;
-    }
-    return "受付は終了しました。";
-  }, [calledNumbers, waitingSummary]);
+};
 
 
-  // --------------------------------------------------------------------------------
-  // UI (早期リターン)
-  // --------------------------------------------------------------------------------
-  
-  if (loading || !db) return <div style={{ textAlign: 'center', padding: '50px', fontSize: '30px', color: '#666' }}>⚡️ リアルタイムデータを読み込み中...</div>;
-  if (error) return <div style={{ textAlign: 'center', padding: '50px', fontSize: '30px', color: 'red' }}>エラー: {error}</div>;
+// --------------------------------------------------------------------------------
+// サブコンポーネント (インラインスタイルに変換)
+// --------------------------------------------------------------------------------
 
+// 統計カードのサブコンポーネント
+const StatCard = ({ title, value, color }) => {
+    let cardStyle = {
+        ...styles.panel,
+        padding: '16px', // p-4
+        boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)', // shadow-md
+        border: '1px solid #e5e7eb',
+        backgroundColor: color === 'bg-white' ? 'white' : color,
+    };
 
-  return (
-    <div style={{ 
-      padding: '40px', 
-      minHeight: '100vh', 
-      backgroundColor: '#00264d', // 濃い青の背景
-      color: 'white', 
-      fontFamily: 'Inter, sans-serif',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      textAlign: 'center'
-    }}>
-      <style>{`
-        @keyframes pulse {
-          0% { transform: scale(1); }
-          50% { transform: scale(1.05); }
-          100% { transform: scale(1); }
-        }
-      `}</style>
-
-      {/* 待ち状況エリア */}
-      <div style={{
-        backgroundColor: '#0055aa',
-        width: '90%',
-        borderRadius: '15px',
-        padding: '20px',
-        boxShadow: '0 8px 15px rgba(0, 0, 0, 0.3)',
-        marginBottom: '40px'
-      }}>
-        <h2 style={{ fontSize: '1.8em', marginBottom: '15px', borderBottom: '2px solid #3385ff', paddingBottom: '10px' }}>現在の待ち状況</h2>
-        <div style={{ display: 'flex', justifyContent: 'space-around', marginTop: '15px' }}>
-          {AVAILABLE_GROUPS.map(group => (
-              <div key={group} style={{ 
-                  padding: '10px 20px', 
-                  backgroundColor: '#007bff',
-                  borderRadius: '10px',
-                  minWidth: '150px'
-              }}>
-                <h4 style={{ fontSize: '1.5em', margin: '0 0 5px 0' }}>団体 {group}</h4>
-                <p style={{ fontSize: '1.1em', margin: '0' }}>団体数: <strong>{waitingSummary[group]?.groups ?? 0}</strong> / 人数: <strong>{waitingSummary[group]?.people ?? 0}</strong> 人</p>
-              </div>
-          ))}
+    return (
+        <div style={cardStyle}>
+            <p style={{ fontSize: '14px', fontWeight: '500', color: '#6b7280' }}>{title}</p>
+            <p style={{ fontSize: '24px', fontWeight: '800', color: '#1f2937', marginTop: '4px' }}>{value}</p>
         </div>
-      </div>
-      
-      {/* 呼び出し中の番号リスト */}
-      <div style={{ 
-        width: '90%',
-        backgroundColor: '#fff',
-        color: '#333',
-        borderRadius: '15px',
-        padding: '30px 20px',
-        boxShadow: '0 12px 25px rgba(0, 0, 0, 0.5)'
-      }}> 
-        <h1 style={{ fontSize: '2.5em', color: '#dc3545', margin: '0 0 20px 0' }}>現在呼び出し中の番号</h1>
+    );
+};
 
-        {calledNumbers.length > 0 ? (
-          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '20px' }}>
-            {calledNumbers.map((n, index) => (
-              <div key={index} style={{
-                minWidth: '150px',
-                margin: '10px',
-                padding: '25px 35px',
-                border: '4px solid #dc3545',
-                borderRadius: '10px',
-                backgroundColor: '#ffe5e5',
-                color: '#dc3545',
-                fontSize: '3em', // 大きなフォント
-                fontWeight: '900',
-                animation: 'pulse 1.5s infinite', // アニメーション
-                boxShadow: '0 4px 10px rgba(220, 53, 69, 0.5)'
-              }}>
-                {n}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p style={{ fontSize: '1.8em', color: '#555', padding: '50px 0' }}>
-            {getStatusMessage}
-          </p>
-        )}
-      </div>
+// ボタンのサブコンポーネント
+const AdminButton = ({ onClick, color, label }) => {
+    let buttonStyle = {
+        padding: '4px 12px',
+        fontSize: '14px',
+        fontWeight: '600',
+        borderRadius: '6px',
+        transition: 'all 0.15s ease-in-out',
+        boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
+        border: 'none',
+        cursor: 'pointer',
+    };
 
-      <p style={{ marginTop: '30px', fontSize: '1.2em', opacity: 0.8 }}>
-        お呼び出し後、10分以内にお受け取りください。
-      </p>
-    </div>
-  );
+    switch (color) {
+        case 'blue': buttonStyle = { ...buttonStyle, backgroundColor: '#3b82f6', color: 'white' }; break;
+        case 'green': buttonStyle = { ...buttonStyle, backgroundColor: '#10b981', color: 'white' }; break;
+        case 'gray': buttonStyle = { ...buttonStyle, backgroundColor: '#6b7280', color: 'white' }; break;
+        case 'red': buttonStyle = { ...buttonStyle, backgroundColor: '#ef4444', color: 'white' }; break;
+        case 'red-outline': buttonStyle = { ...buttonStyle, border: '1px solid #ef4444', color: '#ef4444', backgroundColor: 'transparent' }; break;
+        default: buttonStyle = { ...buttonStyle, backgroundColor: '#e5e7eb', color: '#374151' }; break;
+    }
+
+    // ホバーエフェクトはインラインでは難しいので省略または簡略化
+    return (
+        <button onClick={onClick} style={buttonStyle}>
+            {label}
+        </button>
+    );
+};
+
+
+// --------------------------------------------------------------------------------
+// メインコンポーネント
+// --------------------------------------------------------------------------------
+
+export default function Admin() {
+    // ----------------------------------------------------------------
+    // 状態管理
+    // ----------------------------------------------------------------
+    const [availableCount, setAvailableCount] = useState(1);
+    const [callGroup, setCallGroup] = useState('5-5');
+    const [reservations, setReservations] = useState([]);
+    const [salesStats, setSalesStats] = useState(null);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [showCompleted, setShowCompleted] = useState(true);
+
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+    const [dbInstance, setDbInstance] = useState(null);
+    const [userId, setUserId] = useState(null);
+
+    // 予約ステータスとグループ
+    const STATUS_MAP = useMemo(() => ({
+        waiting: { label: '待機中', color: '#fcd34d', bgColor: '#fffbeb', textColor: '#92400e' }, // yellow-400
+        called: { label: '呼び出し中', color: '#f87171', bgColor: '#fef2f2', textColor: '#991b1b' }, // red-400
+        completed: { label: '完了/受取済み', color: '#34d399', bgColor: '#ecfdf5', textColor: '#065f46' }, // green-400
+        missed: { label: '不在', color: '#9ca3af', bgColor: '#f9fafb', textColor: '#374151' }, // gray-400
+        seatEnter: { label: '受取済み', color: '#34d399', bgColor: '#ecfdf5', textColor: '#065f46' },
+    }), []);
+
+    const GROUP_OPTIONS = useMemo(() => ['5-5', '5-2'], []);
+
+
+    // ----------------------------------------------------------------
+    // 認証とFirebase初期化処理
+    // ----------------------------------------------------------------
+    useEffect(() => {
+        if (Object.keys(firebaseConfig).length === 0) {
+            setError("Fatal Error: Firebase設定が見つかりません。");
+            setLoading(false);
+            return;
+        }
+
+        try {
+            let app;
+            if (!getApps().length) {
+                app = initializeApp(firebaseConfig);
+                console.log("✅ [Admin] Firebase App Initialized (New).");
+            } else {
+                app = getApp();
+                console.log("✅ [Admin] Firebase App Initialized (Existing).");
+            }
+
+            const authInstance = getAuth(app);
+            const firestoreInstance = getFirestore(app);
+            setLogLevel('debug');
+
+            setDbInstance(firestoreInstance);
+
+            const authenticateAdmin = async () => {
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(authInstance, initialAuthToken);
+                    }
+                    else if (ADMIN_CUSTOM_AUTH_TOKEN && ADMIN_CUSTOM_AUTH_TOKEN !== "your-admin-custom-token-here") {
+                        await signInWithCustomToken(authInstance, ADMIN_CUSTOM_AUTH_TOKEN);
+                    }
+                    else {
+                        await signInAnonymously(authInstance);
+                    }
+                } catch (authError) {
+                    console.error("❌ Admin Auth Failed:", authError);
+                    setError(`管理者認証エラー: ${authError.message}`);
+                }
+            };
+
+            const unsubscribeAuth = authInstance.onAuthStateChanged((user) => {
+                if (user) {
+                    setUserId(user.uid);
+                    setLoading(false);
+                } else {
+                    authenticateAdmin();
+                }
+            });
+
+            return () => {
+                unsubscribeAuth();
+            };
+
+        } catch (e) {
+            console.error("❌ [Admin] Firebase Initialization Error:", e);
+            setError(`Firebase初期化エラー: ${e.message}. ブラウザキャッシュをクリアしてください。`);
+            setLoading(false);
+        }
+    }, []);
+
+    // ----------------------------------------------------------------
+    // リアルタイムデータ購読処理
+    // ----------------------------------------------------------------
+    useEffect(() => {
+        if (!dbInstance || !userId) return;
+
+        // 1. 予約リストのリアルタイム購読
+        const reservationsCollectionPath = `/artifacts/${initialAppId}/public/data/reservations`;
+        const qReservations = query(
+            collection(dbInstance, reservationsCollectionPath),
+            orderBy('createdAt', 'desc')
+        );
+
+        const unsubscribeReservations = onSnapshot(qReservations, (snapshot) => {
+            const list = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+                createdAt: doc.data().createdAt?.toDate ? doc.data().createdAt.toDate() : doc.data().createdAt,
+                calledAt: doc.data().calledAt?.toDate ? doc.data().calledAt.toDate() : doc.data().calledAt,
+            }));
+            setReservations(list);
+        }, (err) => {
+            console.error("Firestore Listen Failed (Reservations):", err);
+            setError(`データ取得エラー (予約): ${err.message}`);
+        });
+
+        // 2. 販売実績のリアルタイム購読
+        const salesStatsRef = doc(dbInstance, 'settings', 'salesStats');
+        const unsubscribeSalesStats = onSnapshot(salesStatsRef, (docSnap) => {
+            if (docSnap.exists()) {
+                setSalesStats(docSnap.data());
+            } else {
+                setSalesStats({ nikuman: 0, pizaman: 0, anman: 0, chocoman: 0, oolongcha: 0 });
+            }
+        }, (err) => {
+            console.error("販売実績の購読エラー:", err);
+            setError("販売実績の取得に失敗しました。");
+        });
+
+
+        return () => {
+            unsubscribeReservations();
+            unsubscribeSalesStats();
+        };
+
+    }, [dbInstance, userId, initialAppId]);
+
+
+    // ----------------------------------------------------------------
+    // 自動呼び出し処理
+    // ----------------------------------------------------------------
+    const handleCall = useCallback(async () => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/compute-call`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    availableCount: Number(availableCount),
+                    apiSecret: process.env.REACT_APP_API_SECRET,
+                    callGroup: callGroup,
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`API呼び出しに失敗しました: ${response.status}`);
+            }
+
+            const data = await response.json();
+            if (data.called && data.called.length > 0) {
+                alert('以下の番号を呼び出しました: ' + data.called.join(', '));
+            } else {
+                alert('呼び出せるグループがありませんでした。');
+            }
+        } catch (error) {
+            console.error('呼出エラー:', error);
+            alert('呼出処理中にエラーが発生しました。コンソールを確認してください。');
+        }
+    }, [availableCount, callGroup]);
+
+
+    // ----------------------------------------------------------------
+    // 予約のステータス変更処理
+    // ----------------------------------------------------------------
+    const handleStatusChange = useCallback(async (id, currentStatus, newStatus) => {
+        if (!dbInstance || !userId) return;
+
+        const isConfirmed = window.confirm(`予約番号 ${reservations.find(r => r.id === id)?.number || 'N/A'} のステータスを "${STATUS_MAP[newStatus].label}" に変更しますか？`);
+        if (!isConfirmed) return;
+
+
+        if (newStatus === 'called' && currentStatus === 'waiting') {
+            // API経由の呼び出し (LINE通知のため)
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/reservations/${id}/status/${newStatus}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ apiSecret: 'YOUR_API_SECRET', userId: userId, reservationId: id })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || 'APIエラー');
+                }
+            } catch (e) {
+                console.error('Failed to update status via API:', e);
+                console.log(`ステータス更新に失敗しました: ${e.message}`);
+            }
+        } else {
+            // Firestore直接操作
+            try {
+                const collectionPath = `/artifacts/${initialAppId}/public/data/reservations`;
+                await updateDoc(doc(dbInstance, collectionPath, id), {
+                    status: newStatus,
+                    updatedAt: new Date(),
+                });
+            } catch (e) {
+                console.error('Failed to update status directly:', e);
+                console.log(`ステータス更新に失敗しました: ${e.message}`);
+            }
+        }
+    }, [dbInstance, userId, initialAppId, reservations, STATUS_MAP]);
+
+
+    // ----------------------------------------------------------------
+    // 予約の削除処理
+    // ----------------------------------------------------------------
+    const handleDelete = useCallback(async (id) => {
+        if (!window.confirm("この予約を完全に削除してもよろしいですか？")) return;
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/reservations/${id}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apiSecret: 'YOUR_API_SECRET' })
+            });
+
+            if (!response.ok) {
+                throw new Error('削除APIエラー');
+            }
+        } catch (e) {
+            console.error('Failed to delete reservation:', e);
+            console.log(`削除に失敗しました: ${e.message}`);
+        }
+    }, []);
+
+    // ----------------------------------------------------------------
+    // 予約状況のサマリー計算
+    // ----------------------------------------------------------------
+    const summary = useMemo(() => {
+        const s = {
+            total: 0,
+            waiting: 0,
+            called: 0,
+            groups: {}
+        };
+        GROUP_OPTIONS.forEach(g => s.groups[g] = { total: 0, waiting: 0 });
+
+        reservations.forEach(r => {
+            s.total++;
+            s.groups[r.group] && s.groups[r.group].total++;
+            if (r.status === 'waiting') {
+                s.waiting++;
+                s.groups[r.group] && s.groups[r.group].waiting++;
+            }
+            if (r.status === 'called') {
+                s.called++;
+            }
+        });
+        return s;
+    }, [reservations, GROUP_OPTIONS]);
+
+    // ----------------------------------------------------------------
+    // フィルタリングとソート
+    // ----------------------------------------------------------------
+    const filteredAndSortedReservations = useMemo(() => {
+        const TEN_MINUTES_MS = 10 * 60 * 1000;
+        const now = new Date();
+
+        const getStatusPriority = (r) => {
+            if (r.status === 'called') {
+                const calledAtTime = r.calledAt ? new Date(r.calledAt).getTime() : 0;
+                return (now.getTime() - calledAtTime) > TEN_MINUTES_MS ? 2 : 1;
+            }
+            if (r.status === 'waiting') return 3;
+            if (r.status === 'completed' || r.status === 'seatEnter') return 4;
+            return 5;
+        };
+
+        return reservations
+            .filter(r => {
+                const isCompleted = r.status === 'completed' || r.status === 'seatEnter';
+                if (!showCompleted && isCompleted) return false;
+
+                if (searchTerm === '') return true;
+
+                const number = String(r.number || '');
+                const name = r.name || '';
+                return number.toLowerCase().includes(searchTerm.toLowerCase()) || name.toLowerCase().includes(searchTerm.toLowerCase());
+            })
+            .sort((a, b) => {
+                const priorityA = getStatusPriority(a);
+                const priorityB = getStatusPriority(b);
+                if (priorityA !== priorityB) {
+                    return priorityA - priorityB;
+                }
+                const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                return timeA - timeB;
+            });
+    }, [reservations, searchTerm, showCompleted]);
+
+
+    // ----------------------------------------------------------------
+    // レンダリング
+    // ----------------------------------------------------------------
+    if (loading) {
+        return (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', backgroundColor: '#f9fafb' }}>
+                <p style={{ fontSize: '20px', color: '#4b5563' }}>管理画面をロード中...</p>
+            </div>
+        );
+    }
+
+    if (error) {
+        return (
+            <div style={styles.errorContainer}>
+                <div style={styles.errorBox}>
+                    <h1 style={{ fontSize: '24px', fontWeight: '800', color: '#dc2626', marginBottom: '16px' }}>致命的なエラー</h1>
+                    <p style={{ color: '#374151' }}>{error}</p>
+                    <p style={{ marginTop: '16px', fontSize: '12px', color: '#6b7280' }}>開発者向け情報: 認証ユーザーID = {userId || 'N/A'}</p>
+                    <p style={{ fontSize: '12px', color: '#6b7280' }}>App ID = {initialAppId}</p>
+                </div>
+            </div>
+        );
+    }
+
+
+    return (
+        <div style={styles.screenContainer}>
+            <div style={styles.maxContainer}>
+                <h1 style={styles.header}>
+                    🍽️ 予約・販売管理ダッシュボード
+                </h1>
+                <p style={{ fontSize: '14px', color: '#4b5563', marginBottom: '16px' }}>ユーザーID: {userId || '未認証'}</p>
+
+                {/* 自動呼び出し & 販売実績 */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '24px', marginBottom: '32px' }}>
+                    {/* 自動呼び出しパネル */}
+                    <div style={{ ...styles.panel, borderLeft: '4px solid #3b82f6' }}>
+                        <h2 style={{ fontSize: '20px', fontWeight: 'bold', color: '#1f2937', marginBottom: '16px', borderBottom: '1px solid #e5e7eb', paddingBottom: '8px' }}>自動呼び出し</h2>
+                        <div style={{ marginBottom: '16px' }}>
+                            <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '4px' }}>呼び出し対象の団体:</label>
+                            <select
+                                value={callGroup}
+                                onChange={(e) => setCallGroup(e.target.value)}
+                                style={{ display: 'block', width: '100%', borderRadius: '6px', border: '1px solid #d1d5db', padding: '8px' }}
+                            >
+                                {GROUP_OPTIONS.map(group => (
+                                    <option key={group} value={group}>{`団体 ${group}`}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <div style={{ marginBottom: '24px' }}>
+                            <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: '#374151', marginBottom: '4px' }}>完成個数：</label>
+                            <input
+                                type="number"
+                                value={availableCount}
+                                onChange={(e) => setAvailableCount(e.target.value)}
+                                min={0}
+                                style={{ display: 'block', width: '100%', borderRadius: '6px', border: '1px solid #d1d5db', padding: '8px' }}
+                            />
+                        </div>
+
+                        <button
+                            onClick={handleCall}
+                            style={{ width: '100%', padding: '10px 16px', backgroundColor: '#2563eb', color: 'white', fontWeight: '600', borderRadius: '8px', border: 'none', cursor: 'pointer' }}
+                        >
+                            📢 呼出実行 (API経由)
+                        </button>
+                    </div>
+
+                    {/* 販売実績パネル */}
+                    <div style={{ ...styles.panel, borderLeft: '4px solid #10b981' }}>
+                        <h2 style={{ fontSize: '20px', fontWeight: 'bold', color: '#1f2937', marginBottom: '16px', borderBottom: '1px solid #e5e7eb', paddingBottom: '8px' }}>販売実績 (リアルタイム)</h2>
+                        {salesStats === null ? (
+                            <p style={{ color: '#6b7280' }}>読み込み中...</p>
+                        ) : (
+                            <ul style={{ padding: 0, margin: 0, listStyle: 'none' }}>
+                                {Object.entries(salesStats).map(([key, value]) => {
+                                    const itemName = {
+                                        nikuman: '肉まん', pizaman: 'ピザまん', anman: 'あんまん',
+                                        chocoman: 'チョコまん', oolongcha: '烏龍茶'
+                                    }[key] || key;
+                                    const unit = key === 'oolongcha' ? '本' : '個';
+                                    return (
+                                        <li key={key} style={{ color: '#374151', marginBottom: '8px' }}>
+                                            {itemName}: <strong style={{ fontSize: '18px', color: '#047857' }}>{value || 0}</strong> {unit}
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        )}
+                    </div>
+                </div>
+
+
+                {/* 統計サマリーカード */}
+                <div style={styles.cardGrid}>
+                    <StatCard title="合計予約数" value={summary.total} color="white" />
+                    <StatCard title="待機中グループ" value={summary.waiting} color="#fde68a" /> {/* yellow-200 */}
+                    <StatCard title="呼び出し中グループ" value={summary.called} color="#fecaca" /> {/* red-200 */}
+                    <StatCard
+                        title="5-5 待機"
+                        value={`${summary.groups['5-5'] ? summary.groups['5-5'].waiting : 0} グループ`}
+                        color="#e0e7ff" /> {/* indigo-100 */}
+                    <StatCard
+                        title="5-2 待機"
+                        value={`${summary.groups['5-2'] ? summary.groups['5-2'].waiting : 0} グループ`}
+                        color="#fce7f3" /> {/* pink-100 */}
+                </div>
+
+                {/* 予約リスト */}
+                <div style={styles.panel}>
+                    <h2 style={styles.listTitle}>予約リスト ({filteredAndSortedReservations.length}件 / 全{reservations.length}件)</h2>
+
+                    {/* 検索・フィルター */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '16px', marginBottom: '24px' }}>
+                        <input
+                            type="text"
+                            placeholder="番号 or 名前で検索..."
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            style={{ flexGrow: 1, minWidth: '200px', padding: '8px', border: '1px solid #d1d5db', borderRadius: '6px', boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.05)' }}
+                        />
+                        <label style={{ display: 'flex', alignItems: 'center', fontSize: '14px', color: '#374151', fontWeight: '500' }}>
+                            <input
+                                type="checkbox"
+                                checked={showCompleted}
+                                onChange={(e) => setShowCompleted(e.target.checked)}
+                                style={{ marginRight: '8px', width: '16px', height: '16px' }}
+                            />
+                            <span>完了/受取済みを表示</span>
+                        </label>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        {filteredAndSortedReservations.length === 0 ? (
+                            <p style={{ color: '#6b7280', textAlign: 'center', padding: '40px 0' }}>該当する予約はありません。</p>
+                        ) : (
+                            filteredAndSortedReservations.map((r) => {
+                                const statusInfo = STATUS_MAP[r.status] || STATUS_MAP.missed;
+                                const isWaiting = r.status === 'waiting';
+                                const isCalled = r.status === 'called';
+                                const isOvertime = isCalled && r.calledAt && (new Date().getTime() - new Date(r.calledAt).getTime()) > (10 * 60 * 1000);
+
+                                const itemNames = { nikuman: '肉', pizaman: 'ピザ', anman: 'あん', chocoman: 'チョコ', oolongcha: '茶' };
+                                const orderSummary = r.items ? Object.entries(r.items).filter(([, v]) => v > 0).map(([k, v]) => `${itemNames[k] || k}:${v}`).join(', ') : '情報なし';
+
+                                return (
+                                    <div
+                                        key={r.id}
+                                        style={{
+                                            ...styles.listItem,
+                                            backgroundColor: isOvertime ? '#fef2f2' : '#f9fafb', // bg-red-50 vs bg-gray-50
+                                            border: `1px solid ${isOvertime ? statusInfo.color : '#d1d5db'}`,
+                                        }}
+                                    >
+                                        {/* 予約情報 */}
+                                        <div style={{ flex: 1, minWidth: 0, width: '100%' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px' }}>
+                                                <span
+                                                    style={{
+                                                        ...styles.statusTagBase,
+                                                        backgroundColor: statusInfo.bgColor,
+                                                        color: statusInfo.textColor,
+                                                        borderColor: statusInfo.color,
+                                                    }}
+                                                >
+                                                    {statusInfo.label}{isOvertime && ' (10分超過)'}
+                                                </span>
+                                                <span style={{ fontSize: '18px', fontWeight: '800', color: '#1f2937' }}>
+                                                    番号: {r.number}
+                                                </span>
+                                            </div>
+                                            <p style={{ fontSize: '16px', color: '#374151', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                <span style={{ fontWeight: '600' }}>グループ:</span> {r.group} / <span style={{ fontWeight: '600' }}>人数:</span> {r.people}名 / <span style={{ fontWeight: '600' }}>合計:</span> {r.totalCost?.toLocaleString() || 'N/A'}円
+                                            </p>
+                                            <p style={{ fontSize: '14px', color: '#4b5563', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                <span style={{ fontWeight: '600' }}>注文:</span> {orderSummary}
+                                            </p>
+                                            <p style={{ fontSize: '12px', color: '#6b7280', marginTop: '4px' }}>
+                                                受付: {r.createdAt ? new Date(r.createdAt).toLocaleTimeString('ja-JP') : 'N/A'}
+                                                {r.lineUserId && (
+                                                    <span style={{ marginLeft: '12px', color: '#3b82f6', fontWeight: '500' }}> (LINE通知希望)</span>
+                                                )}
+                                                {r.name && (
+                                                    <span style={{ marginLeft: '12px', color: '#6b7280', fontWeight: '500' }}> 氏名: {r.name}</span>
+                                                )}
+                                            </p>
+                                        </div>
+
+                                        {/* アクションボタン */}
+                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '12px' }}>
+                                            {isWaiting && (
+                                                <AdminButton
+                                                    onClick={() => handleStatusChange(r.id, 'waiting', 'called')}
+                                                    color="red"
+                                                    label="📢 呼び出し"
+                                                />
+                                            )}
+                                            {isCalled && (
+                                                <>
+                                                    <AdminButton
+                                                        onClick={() => handleStatusChange(r.id, 'called', 'completed')}
+                                                        color="green"
+                                                        label="✅ 完了/受取"
+                                                    />
+                                                    <AdminButton
+                                                        onClick={() => handleStatusChange(r.id, 'called', 'missed')}
+                                                        color="gray"
+                                                        label="❌ 不在"
+                                                    />
+                                                </>
+                                            )}
+                                            {r.status !== 'waiting' && (
+                                                <AdminButton
+                                                    onClick={() => handleStatusChange(r.id, r.status, 'waiting')}
+                                                    color="blue"
+                                                    label="↩️ 待機へ戻す"
+                                                />
+                                            )}
+                                            <AdminButton
+                                                onClick={() => handleDelete(r.id)}
+                                                color="red-outline"
+                                                label="🗑️ 削除"
+                                            />
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
 }
