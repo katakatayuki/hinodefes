@@ -193,8 +193,10 @@ async function processLineWebhookEvents(events, db) {
         }
     }
 }
-// server.js に追加 (既存のPUT /api/reservations/:id と置き換えるか、新設)
 
+// server.js に追加 (既存のPUT /api/reservations/:id と置き換えるか、新設)
+// 🚨 既存の PUT /api/reservations/:id とは別で、新しく /api/reservations/:id/status を追加します。
+// 既存の PUT /api/reservations/:id はそのまま残します。
 app.put('/api/reservations/:id/status', async (req, res) => {
     // 🚨 実際には process.env.API_SECRET を使用してください
     if (req.body.apiSecret !== 'YOUR_API_SECRET') {
@@ -266,7 +268,7 @@ async function updateSalesStats(items, db, admin) {
 // POST /api/reservations (予約登録) - 処理を高速化
 // 1. 高速トランザクション (採番、登録、カウンター更新)
 // 2. 即座に応答
-// 3. 応答後に非同期処理 (販売実績更新)
+// 3. 応答後に非同期処理 (販売実績更新 + TV表示更新)
 // ==========================================================
 app.post('/api/reservations', async (req, res) => {
     try {
@@ -338,6 +340,12 @@ app.post('/api/reservations', async (req, res) => {
 
                 return currentNumber;
             });
+            // ★★★★★ トランザクション成功後に集計関数を呼び出す ★★★★★
+            // 応答前に呼ぶとレスポンス遅延の原因になるため、**非同期**で実行するか、
+            // この後に続く応答後の非同期タスクに含めるべきですが、ここでは指示通りに追記します。
+            // ※ 既存ロジックと違い、非同期ではなく直列に実行されます。
+            await updateTvDisplaySummary();
+
         } catch (e) {
             console.error("Transaction failed (Fast part):", e);
             // トランザクション失敗時は500エラーを返す
@@ -531,6 +539,9 @@ app.post('/api/compute-call', async (req, res) => {
         // 4. バッチをコミット
         await batch.commit();
 
+        // ★★★★★ バッチ書き込み成功後に集計関数を呼び出す ★★★★★
+        await updateTvDisplaySummary();
+
         await db.collection('logs').add({
             type: 'call',
             reservationIds: selected.map(s => s.id),
@@ -694,6 +705,10 @@ app.put('/api/reservations/:id', async (req, res) => {
 
         await reservationRef.update(updateData);
 
+        // ★★★★★ ステータス変更後に集計関数を呼び出す ★★★★★
+        // 管理画面からの手動操作もTV表示に反映させるため
+        await updateTvDisplaySummary();
+
         res.json({ success: true, id, newStatus: status });
 
     } catch (e) {
@@ -714,6 +729,9 @@ app.delete('/api/reservations/:id', async (req, res) => {
         const reservationRef = db.collection('reservations').doc(id);
 
         await reservationRef.delete();
+
+        // ★★★★★ 削除成功後に集計関数を呼び出す ★★★★★
+        await updateTvDisplaySummary();
 
         res.json({ success: true, id });
 
