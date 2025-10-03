@@ -331,6 +331,49 @@ app.post('/api/reservations', async (req, res) => {
     }
 });
 
+/**
+ * TV表示用の集計ドキュメント(display/tv)を更新する関数
+ */
+async function updateTvDisplaySummary() {
+    try {
+        console.log('🔄 TV表示サマリーの更新を開始します...');
+        // 1. 全ての 'waiting' と 'called' の予約を取得
+        const reservationsSnap = await db.collection('reservations')
+            .where('status', 'in', ['waiting', 'called']).get();
+
+        // 2. 必要な情報を集計
+        let calledNumbers = [];
+        // 🚨 注意: AVAILABLE_GROUPSはTVDisplay.jsから持ってきて、サーバー側でも定義する
+        const AVAILABLE_GROUPS = ['5-5', '5-2'];
+        let waitingSummary = AVAILABLE_GROUPS.reduce((acc, group) => {
+            acc[group] = { groups: 0, people: 0 };
+            return acc;
+        }, {});
+
+
+        reservationsSnap.forEach(doc => {
+            const data = doc.data();
+            if (data.status === 'called') {
+                calledNumbers.push(data.number);
+            } else if (data.status === 'waiting' && waitingSummary[data.group]) {
+                waitingSummary[data.group].groups += 1;
+                waitingSummary[data.group].people += (data.people || 1);
+            }
+        });
+
+        // 3. 集計用ドキュメントを更新
+        const displayRef = db.doc('display/tv');
+        await displayRef.set({
+            calledNumbers: calledNumbers.sort((a, b) => a - b),
+            waitingSummary,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        console.log('✅ TV表示サマリーの更新が完了しました。');
+    } catch (error) {
+        console.error('❌ TV表示サマリーの更新中にエラーが発生しました:', error);
+    }
+}
+
 
 // ==========================================================
 // POST /api/line-webhook: LINEからのイベント処理 (即時応答を確保)
