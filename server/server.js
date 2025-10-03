@@ -193,7 +193,42 @@ async function processLineWebhookEvents(events, db) {
         }
     }
 }
+// server.js に追加 (既存のPUT /api/reservations/:id と置き換えるか、新設)
 
+app.put('/api/reservations/:id/status', async (req, res) => {
+    // 🚨 実際には process.env.API_SECRET を使用してください
+    if (req.body.apiSecret !== 'YOUR_API_SECRET') {
+        return res.status(403).send({ message: 'Forbidden' });
+    }
+
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+
+        const validStatuses = ['waiting', 'called', 'completed', 'missed', 'seatEnter'];
+        if (!validStatuses.includes(status)) {
+            return res.status(400).send({ message: 'Invalid status value.' });
+        }
+
+        const reservationRef = db.collection('reservations').doc(id);
+        const updateData = { status, updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+
+        if (status === 'called') {
+            updateData.calledAt = admin.firestore.FieldValue.serverTimestamp();
+        }
+
+        await reservationRef.update(updateData);
+
+        // ★★★★★ 変更後に集計関数を呼び出す ★★★★★
+        await updateTvDisplaySummary();
+
+        res.json({ success: true, id, newStatus: status });
+
+    } catch (e) {
+        console.error(`Error updating status for reservation ${req.params.id}:`, e);
+        res.status(500).send({ message: "Status update failed." });
+    }
+});
 // ==========================================================
 // 非同期で販売実績を更新する処理 (低速な部分)
 // 応答後に実行されるため、応答速度に影響を与えません
