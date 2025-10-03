@@ -193,10 +193,8 @@ async function processLineWebhookEvents(events, db) {
         }
     }
 }
-
 // server.js に追加 (既存のPUT /api/reservations/:id と置き換えるか、新設)
-// 🚨 既存の PUT /api/reservations/:id とは別で、新しく /api/reservations/:id/status を追加します。
-// 既存の PUT /api/reservations/:id はそのまま残します。
+
 app.put('/api/reservations/:id/status', async (req, res) => {
     // 🚨 実際には process.env.API_SECRET を使用してください
     if (req.body.apiSecret !== 'YOUR_API_SECRET') {
@@ -396,11 +394,19 @@ async function updateTvDisplaySummary() {
 
         reservationsSnap.forEach(doc => {
             const data = doc.data();
+            const groupKey = data.group; // 予約が持つグループ名を取得
+
             if (data.status === 'called') {
                 calledNumbers.push(data.number);
-            } else if (data.status === 'waiting' && waitingSummary[data.group]) {
-                waitingSummary[data.group].groups += 1;
-                waitingSummary[data.group].people += (data.people || 1);
+            } else if (data.status === 'waiting') {
+                // 予約のgroupが、定義されたAVAILABLE_GROUPSに含まれるかを確認する
+                if (waitingSummary[groupKey]) {
+                    waitingSummary[groupKey].groups += 1;
+                    waitingSummary[groupKey].people += (data.people || 1);
+                } else {
+                    // 定義外のグループ名を持つ予約があった場合、コンソールに警告を出す
+                    console.warn(`Reservation found with unknown group: ${groupKey}. Skipping aggregation.`);
+                }
             }
         });
 
