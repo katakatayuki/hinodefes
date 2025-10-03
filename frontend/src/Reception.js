@@ -4,7 +4,7 @@ import { getAuth, signInAnonymously } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot } from 'firebase/firestore';
 
 // ====================================================================
-// サーバーとLINEのQRコード定
+// サーバーとLINEのQRコード設定
 // ====================================================================
 
 // 🚨 【要変更】あなたのRenderサーバーのURLに置き換えてください
@@ -217,7 +217,7 @@ export default function Reception() {
     };
 
     try {
-      const response = await fetch(`${SERVER_URL}/api/reserve`, {
+      const response = await fetch(`${SERVER_URL}/api/reservations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(reservationData),
