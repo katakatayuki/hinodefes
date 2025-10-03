@@ -583,7 +583,7 @@ app.put('/api/reservations/:id', async (req, res) => {
 });
 
 // ==========================================================
-// DELETE /api/reservations/:id (管理画面からの削除)
+// DELETE /api/reservations/:id (管理画面らの削除)
 // ==========================================================
 app.delete('/api/reservations/:id', async (req, res) => {
     try {
