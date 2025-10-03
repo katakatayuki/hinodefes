@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
 // ====================================================================
-// Firebase/API ンポート
+// Firebase/API インポート
 // ====================================================================
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, signInWithCustomToken, signInAnonymously } from 'firebase/auth';
@@ -258,7 +258,7 @@ export default function Admin() {
         if (!dbInstance || !userId) return;
 
         // 1. 予約リストのリアルタイム購読
-        const reservationsCollectionPath = `/artifacts/${initialAppId}/public/data/reservations`;
+　　    const reservationsCollectionPath = 'reservations'; 
         const qReservations = query(
             collection(dbInstance, reservationsCollectionPath),
             orderBy('createdAt', 'desc')
@@ -296,7 +296,7 @@ export default function Admin() {
             unsubscribeSalesStats();
         };
 
-    }, [dbInstance, userId, initialAppId]);
+    }, [dbInstance, userId]);
 
 
     // ----------------------------------------------------------------
@@ -335,6 +335,7 @@ export default function Admin() {
     // 予約のステータス変更処理
     // ----------------------------------------------------------------
     const handleStatusChange = useCallback(async (id, currentStatus, newStatus) => {
+
         if (!dbInstance || !userId) return;
 
         const isConfirmed = window.confirm(`予約番号 ${reservations.find(r => r.id === id)?.number || 'N/A'} のステータスを "${STATUS_MAP[newStatus].label}" に変更しますか？`);
@@ -361,7 +362,7 @@ export default function Admin() {
         } else {
             // Firestore直接操作
             try {
-                const collectionPath = `/artifacts/${initialAppId}/public/data/reservations`;
+                const collectionPath = 'reservations';
                 await updateDoc(doc(dbInstance, collectionPath, id), {
                     status: newStatus,
                     updatedAt: new Date(),
@@ -371,7 +372,8 @@ export default function Admin() {
                 console.log(`ステータス更新に失敗しました: ${e.message}`);
             }
         }
-    }, [dbInstance, userId, initialAppId, reservations, STATUS_MAP]);
+    }, [dbInstance, userId, reservations, STATUS_MAP]); // initialAppIdへの依存を削除
+
 
 
     // ----------------------------------------------------------------
