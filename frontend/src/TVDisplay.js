@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 
 // ====================================================================
-// Firebase/API インポート
+// Firebase/API インポト
 // ====================================================================
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithCustomToken, signInAnonymously } from 'firebase/auth';
