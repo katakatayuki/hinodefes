@@ -6,7 +6,7 @@ const fetch = require('node-fetch');
 const app = express();
 
 // ==========================================================
-// サーバー定
+// サーバー設定
 // ==========================================================
 // CORSを詳細に設定
 app.use(cors({
@@ -195,7 +195,43 @@ async function processLineWebhookEvents(events, db) {
 }
 
 // ==========================================================
-// POST /api/reservations (予約登録) - 販売実績(salesStats)の更新処理を追加
+// 非同期で販売実績を更新する処理 (低速な部分)
+// 応答後に実行されるため、応答速度に影響を与えません
+// ==========================================================
+async function updateSalesStats(items, db, admin) {
+    if (!items || Object.keys(items).length === 0) {
+        return;
+    }
+    try {
+        const salesStatsRef = db.doc('settings/salesStats');
+        const increments = {};
+        
+        for (const [key, value] of Object.entries(items)) {
+            // 値は文字列として入る可能性があるため、Numberで変換する
+            const numValue = Number(value);
+            if (numValue > 0) {
+                // FieldValue.increment() を使ってアトミックに加算
+                increments[key] = admin.firestore.FieldValue.increment(numValue);
+            }
+        }
+
+        if (Object.keys(increments).length > 0) {
+            // トランザクション外で実行し、応答速度への影響を避ける
+            await salesStatsRef.update(increments);
+            console.log("Sales stats updated asynchronously.");
+        }
+    } catch (e) {
+        // 非同期処理でエラーが発生しても、クライアントへの応答は影響しないが、ログに残す
+        console.error("CRITICAL ERROR in updateSalesStats (Asynchronous Task):", e);
+    }
+}
+
+
+// ==========================================================
+// POST /api/reservations (予約登録) - 処理を高速化
+// 1. 高速トランザクション (採番、登録、カウンター更新)
+// 2. 即座に応答
+// 3. 応答後に非同期処理 (販売実績更新)
 // ==========================================================
 app.post('/api/reservations', async (req, res) => {
     try {
@@ -212,80 +248,86 @@ app.post('/api/reservations', async (req, res) => {
             return res.status(400).send("People must be a valid positive number.");
         }
 
-        // トランザクション処理 (番号の採番、予約保存、販売実績の更新を同時に行う)
-        const newNumber = await db.runTransaction(async (t) => {
-            const counterRef = db.doc(COUNTER_DOC);
-            const counterDoc = await t.get(counterRef);
+        let newNumber;
+        
+        // 1. 高速なトランザクション処理 (番号の採番、予約登録、カウンター更新のみ)
+        // --------------------------------------------------
+        try {
+            newNumber = await db.runTransaction(async (t) => {
+                const counterRef = db.doc(COUNTER_DOC);
+                const counterDoc = await t.get(counterRef);
 
-            let currentNumber = 1;
-            const currentCounters = counterDoc.exists ? counterDoc.data() : {};
+                let currentNumber = 1;
+                const currentCounters = counterDoc.exists ? counterDoc.data() : {};
 
-            // 団体ごとの連番管理ロジック
-            if (currentCounters[group]) {
-                const lastUpdated = currentCounters[group].updatedAt.toDate();
-                const now = new Date();
-                const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
+                // 団体ごとの連番管理ロジック
+                if (currentCounters[group]) {
+                    const lastUpdated = currentCounters[group].updatedAt.toDate();
+                    const now = new Date();
+                    const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
 
-                // 12時間経過していたらリセット
-                if (now.getTime() - lastUpdated.getTime() > TWELVE_HOURS_MS) {
-                    currentNumber = 1;
-                } else {
-                    currentNumber = currentCounters[group].currentNumber + 1; // インクリメント
-                }
-            }
-            
-            // 🚨 追加: salesStatsをアトミックに更新する処理
-            // --------------------------------------------------
-            if (items && Object.keys(items).length > 0) {
-                const salesStatsRef = db.doc('settings/salesStats');
-                const increments = {};
-                for (const [key, value] of Object.entries(items)) {
-                    if (value > 0) {
-                        // FieldValue.increment() を使ってアトミックに加算
-                        increments[key] = admin.firestore.FieldValue.increment(Number(value));
+                    // 12時間経過していたらリセット
+                    if (now.getTime() - lastUpdated.getTime() > TWELVE_HOURS_MS) {
+                        currentNumber = 1;
+                    } else {
+                        currentNumber = currentCounters[group].currentNumber + 1; // インクリメント
                     }
                 }
-                // salesStatsドキュメントをトランザクション内で更新
-                if (Object.keys(increments).length > 0) {
-                    t.update(salesStatsRef, increments);
-                }
-            }
-            // --------------------------------------------------
+                
+                // 🚨 販売実績 (settings/salesStats) の更新処理は削除し、高速化
 
-            // カウンターを更新
-            t.update(counterRef, {
-                [group]: {
-                    currentNumber: currentNumber,
-                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                }
+                // カウンターを更新 (ステップ④)
+                t.update(counterRef, {
+                    [group]: {
+                        currentNumber: currentNumber,
+                        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    }
+                });
+
+                // 予約を登録 (ステップ②)
+                const newReservationRef = db.collection('reservations').doc();
+                t.set(newReservationRef, {
+                    number: currentNumber, // 連番 (ステップ①)
+                    group: group,
+                    name: name,
+                    people: numPeople,
+                    wantsLine: !!wantsLine,
+                    lineUserId: lineUserId || null,
+                    status: 'waiting', // 常に待機中
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    calledAt: null,
+                    seatEnterAt: null,
+                    // 🚨 itemsを予約ドキュメントに保存
+                    items: items || {},
+                });
+
+                return currentNumber;
             });
+        } catch (e) {
+            console.error("Transaction failed (Fast part):", e);
+            // トランザクション失敗時は500エラーを返す
+            return res.status(500).json({ error: "Failed to create reservation (Transaction failed)" });
+        }
+        // --------------------------------------------------
 
-            // 予約を登録
-            const newReservationRef = db.collection('reservations').doc();
-            t.set(newReservationRef, {
-                number: currentNumber, // 連番
-                group: group,
-                name: name,
-                people: numPeople,
-                wantsLine: !!wantsLine,
-                lineUserId: lineUserId || null,
-                status: 'waiting', // 常に待機中
-                createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                calledAt: null,
-                seatEnterAt: null,
-                // 🚨 修正: Reception.jsに合わせて'items'を保存
-                items: items || {},
-            });
-
-            return currentNumber;
-        });
-
-        // 応答を返す
+        // 2. クライアントに応答を返す (高速な部分の完了)
         res.json({ success: true, number: newNumber, group: group });
+        
+        // 3. 応答を返した後、低速な非同期処理 (販売実績の更新 - ステップ③) を実行
+        //    クライアントへの応答速度に影響を与えない
+        // --------------------------------------------------
+        updateSalesStats(items, db, admin).catch(e => {
+            console.error("Error initiating updateSalesStats task (Asynchronous):", e);
+        });
+        // --------------------------------------------------
+
 
     } catch (e) {
-        console.error("Error creating reservation:", e);
-        res.status(500).json({ error: "Failed to create reservation" });
+        console.error("Error creating reservation (outer catch):", e);
+        // 外側のエラー（入力検証など）を捕捉
+        if (!res.headersSent) {
+            res.status(500).json({ error: "Failed to create reservation" });
+        }
     }
 });
 
@@ -408,7 +450,7 @@ app.post('/api/compute-call', async (req, res) => {
             updatedAt: now
         }, { merge: true });
 
-        // 4. トランザクションをコミット
+        // 4. バッチをコミット
         await batch.commit();
 
         await db.collection('logs').add({
