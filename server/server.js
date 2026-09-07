@@ -142,7 +142,7 @@ async function processLineWebhookEvents(events) {
         // 1. 友だち追加時
         // -----------------------------------------------------
         if (event.type === 'follow') {
-            const message = '友だち追加ありがとうございます！\n\n予約完了画面に表示された「予約コード（4桁）」を送信してください。\n例: 3821\n\nご予約時間が近づいたら、こちらのLINEでお知らせします。';
+            const message = 'このたびは友だち追加いただき、誠にありがとうございます！\n\nご予約時間が近づいたら、こちらのLINEでお知らせいたします。\n\n通知を受け取るには、予約完了画面に表示された「予約コード（4桁）」をこのトークに送信してください。\n例: 3821';
             await sendLineReply(replyToken, message);
             continue;
         }
